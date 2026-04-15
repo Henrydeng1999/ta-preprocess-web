@@ -830,7 +830,7 @@ function downloadFitCSV(baseName) {
   for (let k = 0; k < maxNExp; k++) {
     headers.push(`τ${k + 1}(ps)`, `τ${k + 1}标准差`, `A${k + 1}(mOD)`, `A${k + 1}标准差(mOD)`);
   }
-  headers.push('偏移(mOD)', '偏移标准差(mOD)');
+  headers.push('y0(mOD)', 'y0标准差(mOD)');
 
   let csv = headers.join(',') + '\n';
   for (const r of results) {
@@ -1091,7 +1091,7 @@ async function doKineticFit(baseName, divId) {
       const offStd = fitResult.stdErrs[fitResult.stdErrs.length - 1];
       offStr += ` ± ${(offStd * 1000).toFixed(3)}`;
     }
-    paramRows += `<tr><td>偏移</td><td colspan="3">${offStr}</td></tr>`;
+    paramRows += `<tr><td>y0</td><td colspan="3">${offStr}</td></tr>`;
 
     resultHtml += `
       <div style="margin-bottom:12px;padding:12px;background:#ffffff;border-radius:6px;border-left:4px solid ${color};color:#222;">
