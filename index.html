@@ -8,55 +8,114 @@
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #f5f7fa; color: #333; }
-.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 30px; }
+body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #1a1a1a; color: #e0e0e0; }
+.cover { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: #0d0d0d; display: flex; align-items: center; justify-content: center; transition: opacity 0.6s, visibility 0.6s; }
+.cover.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+.cover-inner { max-width: 720px; text-align: center; padding: 40px; }
+.cover-inner h1 { font-size: 42px; font-weight: 800; margin-bottom: 8px; background: linear-gradient(135deg, #ff4444, #ff8800); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.cover-inner .subtitle { font-size: 16px; color: #999; margin-bottom: 40px; letter-spacing: 2px; }
+.cover-features { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; text-align: left; margin-bottom: 36px; }
+.cover-feature { background: #1e1e1e; border: 1px solid #333; border-radius: 10px; padding: 16px; }
+.cover-feature h3 { font-size: 14px; color: #ff4444; margin-bottom: 6px; }
+.cover-feature p { font-size: 12px; color: #aaa; line-height: 1.6; }
+.cover-notes { background: #1e1e1e; border: 1px solid #333; border-radius: 10px; padding: 16px; text-align: left; margin-bottom: 36px; }
+.cover-notes h3 { font-size: 14px; color: #ff4444; margin-bottom: 8px; }
+.cover-notes ul { list-style: none; padding: 0; }
+.cover-notes ul li { font-size: 12px; color: #aaa; line-height: 1.8; padding-left: 16px; position: relative; }
+.cover-notes ul li::before { content: '⚠'; position: absolute; left: 0; font-size: 11px; }
+.cover-footer { font-size: 12px; color: #555; margin-bottom: 30px; line-height: 1.8; }
+.btn-enter { padding: 14px 48px; border: none; border-radius: 10px; font-size: 18px; font-weight: 700; cursor: pointer; background: linear-gradient(135deg, #cc0000, #ff4444); color: white; transition: transform 0.2s, box-shadow 0.2s; letter-spacing: 2px; }
+.btn-enter:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(255,68,68,0.4); }
+.header { background: linear-gradient(135deg, #1a0000 0%, #330000 50%, #1a0000 100%); color: white; padding: 20px 30px; border-bottom: 2px solid #cc0000; }
 .header h1 { font-size: 24px; margin-bottom: 4px; }
-.header p { font-size: 14px; opacity: 0.85; }
+.header p { font-size: 14px; opacity: 0.7; }
 .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-.card { background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 24px; margin-bottom: 20px; }
-.card h2 { font-size: 18px; margin-bottom: 16px; color: #444; border-bottom: 2px solid #667eea; padding-bottom: 8px; }
+.card { background: #222; border-radius: 12px; border: 1px solid #333; padding: 24px; margin-bottom: 20px; }
+.card h2 { font-size: 18px; margin-bottom: 16px; color: #ff6666; border-bottom: 2px solid #cc0000; padding-bottom: 8px; }
 .params { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
-.param-group label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
-.param-group input, .param-group select { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-.param-group input:focus, .param-group select:focus { outline: none; border-color: #667eea; }
-.upload-zone { border: 2px dashed #ccc; border-radius: 12px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; }
-.upload-zone:hover, .upload-zone.dragover { border-color: #667eea; background: #f0f0ff; }
+.param-group label { display: block; font-size: 13px; color: #999; margin-bottom: 4px; }
+.param-group input, .param-group select { width: 100%; padding: 8px 12px; border: 1px solid #444; border-radius: 6px; font-size: 14px; background: #1a1a1a; color: #e0e0e0; }
+.param-group input:focus, .param-group select:focus { outline: none; border-color: #cc0000; }
+.upload-zone { border: 2px dashed #444; border-radius: 12px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.3s; }
+.upload-zone:hover, .upload-zone.dragover { border-color: #cc0000; background: #2a0000; }
 .upload-zone p { color: #888; margin-top: 8px; }
 .btn { padding: 10px 24px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; transition: all 0.2s; }
-.btn-primary { background: #667eea; color: white; }
-.btn-primary:hover { background: #5a6fd6; }
-.btn-primary:disabled { background: #ccc; cursor: not-allowed; }
-.btn-download { background: #28a745; color: white; margin-top: 12px; }
-.btn-download:hover { background: #218838; }
-.tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee; }
+.btn-primary { background: #cc0000; color: white; }
+.btn-primary:hover { background: #aa0000; }
+.btn-primary:disabled { background: #444; cursor: not-allowed; color: #888; }
+.btn-download { background: #cc0000; color: white; margin-top: 8px; margin-right: 8px; }
+.btn-download:hover { background: #aa0000; }
+.tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #333; }
 .tab { padding: 10px 20px; cursor: pointer; font-size: 14px; color: #888; border-bottom: 3px solid transparent; transition: all 0.2s; }
-.tab.active { color: #667eea; border-bottom-color: #667eea; font-weight: 600; }
+.tab.active { color: #ff4444; border-bottom-color: #cc0000; font-weight: 600; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 .plot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-.plot-box { background: #fafafa; border-radius: 8px; padding: 12px; min-height: 350px; }
-.plot-box h3 { font-size: 14px; color: #666; margin-bottom: 8px; text-align: center; }
+.plot-box { background: #1a1a1a; border-radius: 8px; padding: 12px; min-height: 350px; border: 1px solid #333; }
+.plot-box h3 { font-size: 14px; color: #999; margin-bottom: 8px; text-align: center; }
 .status { padding: 8px 16px; border-radius: 6px; font-size: 13px; margin-top: 12px; }
-.status-info { background: #e8f4fd; color: #0c5460; }
-.status-success { background: #d4edda; color: #155724; }
-.status-error { background: #f8d7da; color: #721c24; }
-.progress-bar { width: 100%; height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin-top: 12px; }
-.progress-bar .fill { height: 100%; background: linear-gradient(90deg, #667eea, #764ba2); transition: width 0.3s; }
+.status-info { background: #1a2a3a; color: #6cb4ee; }
+.status-success { background: #1a2a1a; color: #66cc66; }
+.status-error { background: #2a1a1a; color: #ff6666; }
+.progress-bar { width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; margin-top: 12px; }
+.progress-bar .fill { height: 100%; background: linear-gradient(90deg, #cc0000, #ff4444); transition: width 0.3s; }
 .file-list { margin-top: 12px; }
-.file-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #f8f9fa; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
+.file-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #1a1a1a; border-radius: 6px; margin-bottom: 6px; font-size: 13px; border: 1px solid #333; }
 .file-item .name { font-weight: 500; }
 .file-item .size { color: #888; }
-.fit-controls { background: #f8f9fa; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.fit-controls { background: #1a1a1a; border-radius: 8px; padding: 16px; margin-bottom: 16px; border: 1px solid #333; }
 .fit-controls table { border-collapse: collapse; }
 .fit-controls table td, .fit-controls table th { padding: 4px 8px; text-align: left; }
-@media (max-width: 768px) { .plot-grid { grid-template-columns: 1fr; } .params { grid-template-columns: 1fr 1fr; } }
+.download-section { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+@media (max-width: 768px) { .plot-grid { grid-template-columns: 1fr; } .params { grid-template-columns: 1fr 1fr; } .cover-features { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 
+<div class="cover" id="coverPage">
+  <div class="cover-inner">
+    <h1>TA Preprocess</h1>
+    <div class="subtitle">瞬态吸收光谱数据预处理工具</div>
+    <div class="cover-features">
+      <div class="cover-feature">
+        <h3>波长裁剪</h3>
+        <p>自由设定波长范围，剔除无关光谱区域，减少数据量</p>
+      </div>
+      <div class="cover-feature">
+        <h3>基线扣除</h3>
+        <p>利用 t&lt;0 时光谱信号的平均值作为基线，自动扣除零点漂移</p>
+      </div>
+      <div class="cover-feature">
+        <h3>啁啾校正</h3>
+        <p>支持半高点法和全局优化法，消除超快光谱中的群速度色散效应</p>
+      </div>
+      <div class="cover-feature">
+        <h3>动力学拟合</h3>
+        <p>单波长多指数衰减拟合（1/2/3指数），自动提取寿命分量和振幅</p>
+      </div>
+    </div>
+    <div class="cover-notes">
+      <h3>使用须知</h3>
+      <ul>
+        <li>CSV 格式：第1行为时间(ps)，后续每行为「波长(nm), ΔA1, ΔA2, ...」</li>
+        <li>文件末尾的非数值文本会被自动忽略，无需手动删除</li>
+        <li>所有计算在浏览器本地完成，数据不会上传至任何服务器</li>
+        <li>啁啾校正的全局优化法计算量较大，大文件可能需要数秒</li>
+        <li>动力学拟合使用 Nelder-Mead 优化，建议从2指数开始尝试</li>
+      </ul>
+    </div>
+    <div class="cover-footer">
+      制作者：TA-Preprocess-Web Team<br>
+      技术栈：纯前端 · Plotly.js · Nelder-Mead 优化器<br>
+      本工具仅供学术研究使用
+    </div>
+    <button class="btn-enter" onclick="enterApp()">开始使用</button>
+  </div>
+</div>
+
 <div class="header">
   <h1>🔬 瞬态吸收数据预处理工具</h1>
-  <p>波长裁剪 · 基线扣除 · 啁啾校正 — 纯前端，无需服务器</p>
+  <p>波长裁剪 · 基线扣除 · 啁啾校正 · 动力学拟合 — 纯前端，无需服务器</p>
 </div>
 
 <div class="container">
@@ -102,7 +161,7 @@ body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #f
     <div class="upload-zone" id="uploadZone">
       <div style="font-size: 40px;">📂</div>
       <p>点击或拖拽CSV文件到此处（支持多文件）</p>
-      <p style="font-size: 12px; color: #aaa;">第1行为时间(ps)，后续行为波长(nm)+ΔA，末尾文本自动忽略</p>
+      <p style="font-size: 12px; color: #666;">第1行为时间(ps)，后续行为波长(nm)+ΔA，末尾文本自动忽略</p>
       <input type="file" id="fileInput" accept=".csv" multiple style="display:none">
     </div>
     <div class="file-list" id="fileList"></div>

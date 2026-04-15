@@ -2,6 +2,10 @@ let uploadedFiles = [];
 
 function $(id) { return document.getElementById(id); }
 
+function enterApp() {
+  $('coverPage').classList.add('hidden');
+}
+
 $('uploadZone').addEventListener('click', () => $('fileInput').click());
 $('uploadZone').addEventListener('dragover', e => { e.preventDefault(); $('uploadZone').classList.add('dragover'); });
 $('uploadZone').addEventListener('dragleave', () => $('uploadZone').classList.remove('dragover'));
@@ -464,8 +468,13 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       <div id="${divId}_fitResult"></div>
     </div>
     <div class="tab-content" id="${divId}_tabDownload">
-      <p>处理后的数据可下载为JSON格式：</p>
-      <button class="btn btn-download" onclick="downloadJSON('${baseName}', '${divId}')">⬇️ 下载 ${baseName}_processed.json</button>
+      <p style="margin-bottom:12px;">处理后的数据支持以下格式下载：</p>
+      <div class="download-section">
+        <button class="btn btn-download" onclick="downloadJSON('${baseName}')">⬇️ JSON</button>
+        <button class="btn btn-download" onclick="downloadCSV('${baseName}')">⬇️ CSV</button>
+        <button class="btn btn-download" onclick="downloadASCII('${baseName}')">⬇️ ASCII (空格分隔)</button>
+        <button class="btn btn-download" onclick="downloadTSV('${baseName}')">⬇️ TSV (Tab分隔)</button>
+      </div>
       <div style="margin-top:12px;font-size:13px;color:#888;" id="${divId}_info"></div>
     </div>
   </div>`;
@@ -590,7 +599,15 @@ function switchTab(el, divId, tabName) {
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
 
-function downloadJSON(baseName, divId) {
+function triggerDownload(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function downloadJSON(baseName) {
   const data = window[`data_${baseName}`];
   if (!data) return;
   const json = JSON.stringify({
@@ -598,12 +615,53 @@ function downloadJSON(baseName, divId) {
     wavelength_array: data.wavelengthArray,
     TA_2D_data: data.TA2D,
     chirp_coeffs: data.coeffs
-  });
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${baseName}_processed.json`;
-  a.click(); URL.revokeObjectURL(url);
+  }, null, 2);
+  triggerDownload(json, `${baseName}_processed.json`, 'application/json');
+}
+
+function downloadCSV(baseName) {
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+  const time = data.timeArray;
+  const wl = data.wavelengthArray;
+  const ta = data.TA2D;
+  let csv = ',' + time.map(t => t.toFixed(6)).join(',') + '\n';
+  for (let i = 0; i < wl.length; i++) {
+    csv += wl[i].toFixed(2) + ',' + ta[i].map(v => isNaN(v) ? '' : v.toExponential(8)).join(',') + '\n';
+  }
+  triggerDownload(csv, `${baseName}_processed.csv`, 'text/csv');
+}
+
+function downloadASCII(baseName) {
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+  const time = data.timeArray;
+  const wl = data.wavelengthArray;
+  const ta = data.TA2D;
+  let txt = 'wavelength(nm)';
+  for (let j = 0; j < time.length; j++) txt += `  ${time[j].toFixed(6)}`;
+  txt += '\n';
+  for (let i = 0; i < wl.length; i++) {
+    txt += wl[i].toFixed(2);
+    for (let j = 0; j < time.length; j++) {
+      txt += `  ${isNaN(ta[i][j]) ? 'NaN' : ta[i][j].toExponential(8)}`;
+    }
+    txt += '\n';
+  }
+  triggerDownload(txt, `${baseName}_processed.dat`, 'text/plain');
+}
+
+function downloadTSV(baseName) {
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+  const time = data.timeArray;
+  const wl = data.wavelengthArray;
+  const ta = data.TA2D;
+  let tsv = '\t' + time.map(t => t.toFixed(6)).join('\t') + '\n';
+  for (let i = 0; i < wl.length; i++) {
+    tsv += wl[i].toFixed(2) + '\t' + ta[i].map(v => isNaN(v) ? '' : v.toExponential(8)).join('\t') + '\n';
+  }
+  triggerDownload(tsv, `${baseName}_processed.tsv`, 'text/tab-separated-values');
 }
 
 function multiExpFunc(params, t, nExp) {
