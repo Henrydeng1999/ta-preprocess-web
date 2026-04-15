@@ -6,6 +6,11 @@ function enterApp() {
   $('coverPage').classList.add('hidden');
 }
 
+document.addEventListener('DOMContentLoaded', function() {
+  const enterBtn = document.getElementById('enterBtn');
+  if (enterBtn) enterBtn.addEventListener('click', enterApp);
+});
+
 $('uploadZone').addEventListener('click', () => $('fileInput').click());
 $('uploadZone').addEventListener('dragover', e => { e.preventDefault(); $('uploadZone').classList.add('dragover'); });
 $('uploadZone').addEventListener('dragleave', () => $('uploadZone').classList.remove('dragover'));
