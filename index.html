@@ -8,24 +8,65 @@
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #1a1a1a; color: #e0e0e0; }
-.cover { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: #0d0d0d; display: flex; align-items: center; justify-content: center; transition: opacity 0.6s, visibility 0.6s; }
+body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a1a1a; color: #e0e0e0; }
+
+.cover { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: #0a0a0a; display: flex; align-items: center; justify-content: center; transition: opacity 0.8s ease-out, visibility 0.8s; overflow: hidden; }
 .cover.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
-.cover-inner { max-width: 720px; text-align: center; padding: 40px; }
-.cover-inner h1 { font-size: 42px; font-weight: 800; margin-bottom: 8px; background: linear-gradient(135deg, #ff4444, #ff8800); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-.cover-inner .subtitle { font-size: 16px; color: #999; margin-bottom: 40px; letter-spacing: 2px; }
-.cover-features { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; text-align: left; margin-bottom: 36px; }
-.cover-feature { background: #1e1e1e; border: 1px solid #333; border-radius: 10px; padding: 16px; }
-.cover-feature h3 { font-size: 14px; color: #ff4444; margin-bottom: 6px; }
-.cover-feature p { font-size: 12px; color: #aaa; line-height: 1.6; }
-.cover-notes { background: #1e1e1e; border: 1px solid #333; border-radius: 10px; padding: 16px; text-align: left; margin-bottom: 36px; }
-.cover-notes h3 { font-size: 14px; color: #ff4444; margin-bottom: 8px; }
+.cover::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px); pointer-events: none; z-index: 1; }
+.cover::after { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(ellipse at 50% 50%, transparent 0%, rgba(0,0,0,0.6) 100%); pointer-events: none; z-index: 1; }
+
+.cover-grid { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-image: linear-gradient(rgba(255,0,60,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,0,60,0.06) 1px, transparent 1px); background-size: 60px 60px; animation: gridMove 8s linear infinite; }
+@keyframes gridMove { 0% { transform: perspective(500px) rotateX(0deg); } 100% { transform: perspective(500px) rotateX(0deg) translateY(60px); } }
+
+.cover-particles { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; z-index: 0; }
+.particle { position: absolute; width: 2px; height: 2px; background: #ff003c; border-radius: 50%; box-shadow: 0 0 6px #ff003c; animation: float linear infinite; opacity: 0; }
+@keyframes float { 0% { transform: translateY(100vh); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateY(-10vh); opacity: 0; } }
+
+.cover-inner { position: relative; z-index: 2; max-width: 800px; width: 90%; text-align: center; padding: 40px 20px; }
+
+.cover-tag { display: inline-block; font-size: 11px; letter-spacing: 4px; color: #ff003c; border: 1px solid #ff003c; padding: 4px 16px; margin-bottom: 24px; text-transform: uppercase; animation: flicker 3s infinite; }
+@keyframes flicker { 0%,100% { opacity: 1; } 92% { opacity: 1; } 93% { opacity: 0.3; } 94% { opacity: 1; } 96% { opacity: 0.5; } 97% { opacity: 1; } }
+
+.cover-inner h1 { font-size: 56px; font-weight: 900; margin-bottom: 4px; letter-spacing: 6px; color: #fff; text-shadow: 0 0 20px rgba(255,0,60,0.8), 0 0 60px rgba(255,0,60,0.4), 0 0 100px rgba(255,0,60,0.2); animation: glitch 5s infinite; }
+@keyframes glitch { 0%,100% { text-shadow: 0 0 20px rgba(255,0,60,0.8), 0 0 60px rgba(255,0,60,0.4); } 89% { text-shadow: 0 0 20px rgba(255,0,60,0.8), 0 0 60px rgba(255,0,60,0.4); } 90% { text-shadow: -3px 0 #0ff, 3px 0 #ff003c, 0 0 20px rgba(255,0,60,0.8); } 91% { text-shadow: 0 0 20px rgba(255,0,60,0.8), 0 0 60px rgba(255,0,60,0.4); } 95% { text-shadow: 2px 0 #0ff, -2px 0 #ff003c, 0 0 20px rgba(255,0,60,0.8); } 96% { text-shadow: 0 0 20px rgba(255,0,60,0.8), 0 0 60px rgba(255,0,60,0.4); } }
+
+.cover-inner .subtitle { font-size: 14px; color: #888; margin-bottom: 36px; letter-spacing: 6px; text-transform: uppercase; }
+.cover-inner .subtitle span { color: #ff003c; }
+
+.cover-divider { width: 100%; height: 1px; background: linear-gradient(90deg, transparent, #ff003c, transparent); margin: 28px 0; position: relative; }
+.cover-divider::after { content: '◆'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff003c; font-size: 10px; background: #0a0a0a; padding: 0 12px; }
+
+.cover-features { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; text-align: left; margin-bottom: 28px; }
+.cover-feature { background: rgba(255,0,60,0.04); border: 1px solid rgba(255,0,60,0.2); padding: 14px 16px; position: relative; transition: all 0.3s; }
+.cover-feature:hover { border-color: #ff003c; background: rgba(255,0,60,0.08); box-shadow: 0 0 20px rgba(255,0,60,0.15), inset 0 0 20px rgba(255,0,60,0.05); }
+.cover-feature::before { content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: #ff003c; }
+.cover-feature .feat-icon { font-size: 20px; margin-bottom: 6px; }
+.cover-feature h3 { font-size: 13px; color: #ff003c; margin-bottom: 4px; letter-spacing: 1px; text-transform: uppercase; }
+.cover-feature p { font-size: 11px; color: #888; line-height: 1.6; }
+
+.cover-pipeline { display: flex; align-items: center; justify-content: center; gap: 0; margin-bottom: 28px; flex-wrap: wrap; }
+.pipe-step { font-size: 11px; color: #ccc; background: rgba(255,0,60,0.08); border: 1px solid rgba(255,0,60,0.25); padding: 6px 14px; letter-spacing: 1px; }
+.pipe-arrow { color: #ff003c; font-size: 14px; margin: 0 4px; }
+
+.cover-notes { background: rgba(255,0,60,0.03); border: 1px solid rgba(255,0,60,0.15); padding: 16px 20px; text-align: left; margin-bottom: 28px; position: relative; }
+.cover-notes::before { content: 'SYS.WARNING'; position: absolute; top: -9px; left: 16px; font-size: 10px; color: #ff003c; background: #0a0a0a; padding: 0 8px; letter-spacing: 2px; }
 .cover-notes ul { list-style: none; padding: 0; }
-.cover-notes ul li { font-size: 12px; color: #aaa; line-height: 1.8; padding-left: 16px; position: relative; }
-.cover-notes ul li::before { content: '⚠'; position: absolute; left: 0; font-size: 11px; }
-.cover-footer { font-size: 12px; color: #555; margin-bottom: 30px; line-height: 1.8; }
-.btn-enter { padding: 14px 48px; border: none; border-radius: 10px; font-size: 18px; font-weight: 700; cursor: pointer; background: linear-gradient(135deg, #cc0000, #ff4444); color: white; transition: transform 0.2s, box-shadow 0.2s; letter-spacing: 2px; }
-.btn-enter:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(255,68,68,0.4); }
+.cover-notes ul li { font-size: 11px; color: #999; line-height: 2; padding-left: 20px; position: relative; }
+.cover-notes ul li::before { content: '>'; position: absolute; left: 0; color: #ff003c; font-family: monospace; font-weight: bold; }
+
+.cover-footer { font-size: 11px; color: #444; margin-bottom: 28px; line-height: 2; letter-spacing: 1px; }
+.cover-footer span { color: #ff003c; }
+
+.btn-enter { padding: 14px 56px; border: 2px solid #ff003c; background: transparent; font-size: 16px; font-weight: 700; cursor: pointer; color: #ff003c; letter-spacing: 4px; text-transform: uppercase; transition: all 0.3s; position: relative; overflow: hidden; font-family: 'Courier New', monospace; }
+.btn-enter::before { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,0,60,0.2), transparent); transition: left 0.5s; }
+.btn-enter:hover { background: rgba(255,0,60,0.15); box-shadow: 0 0 30px rgba(255,0,60,0.4), inset 0 0 30px rgba(255,0,60,0.1); text-shadow: 0 0 10px rgba(255,0,60,0.8); }
+.btn-enter:hover::before { left: 100%; }
+
+.cover-version { position: absolute; bottom: 16px; right: 20px; font-size: 10px; color: #333; letter-spacing: 2px; z-index: 2; }
+.cover-sys { position: absolute; bottom: 16px; left: 20px; font-size: 10px; color: #333; letter-spacing: 1px; z-index: 2; }
+.cover-sys .blink { animation: blink 1s step-end infinite; color: #ff003c; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
 .header { background: linear-gradient(135deg, #1a0000 0%, #330000 50%, #1a0000 100%); color: white; padding: 20px 30px; border-bottom: 2px solid #cc0000; }
 .header h1 { font-size: 24px; margin-bottom: 4px; }
 .header p { font-size: 14px; opacity: 0.7; }
@@ -67,50 +108,75 @@ body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #1
 .fit-controls table { border-collapse: collapse; }
 .fit-controls table td, .fit-controls table th { padding: 4px 8px; text-align: left; }
 .download-section { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-@media (max-width: 768px) { .plot-grid { grid-template-columns: 1fr; } .params { grid-template-columns: 1fr 1fr; } .cover-features { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .plot-grid { grid-template-columns: 1fr; } .params { grid-template-columns: 1fr 1fr; } .cover-features { grid-template-columns: 1fr; } .cover-inner h1 { font-size: 36px; } .cover-pipeline { flex-direction: column; } .pipe-arrow { transform: rotate(90deg); } }
 </style>
 </head>
 <body>
 
 <div class="cover" id="coverPage">
+  <div class="cover-grid"></div>
+  <div class="cover-particles" id="particles"></div>
+
   <div class="cover-inner">
-    <h1>TA Preprocess</h1>
-    <div class="subtitle">瞬态吸收光谱数据预处理工具</div>
+    <div class="cover-tag">Transient Absorption · Data Pipeline</div>
+    <h1>TA PREPROCESS</h1>
+    <div class="subtitle">瞬态吸收光谱 <span>·</span> 数据预处理系统</div>
+
+    <div class="cover-divider"></div>
+
+    <div class="cover-pipeline">
+      <span class="pipe-step">CSV 导入</span><span class="pipe-arrow">▸</span>
+      <span class="pipe-step">波长裁剪</span><span class="pipe-arrow">▸</span>
+      <span class="pipe-step">基线扣除</span><span class="pipe-arrow">▸</span>
+      <span class="pipe-step">啁啾校正</span><span class="pipe-arrow">▸</span>
+      <span class="pipe-step">动力学拟合</span><span class="pipe-arrow">▸</span>
+      <span class="pipe-step">多格式导出</span>
+    </div>
+
     <div class="cover-features">
       <div class="cover-feature">
-        <h3>波长裁剪</h3>
+        <div class="feat-icon">✂️</div>
+        <h3>Wavelength Crop</h3>
         <p>自由设定波长范围，剔除无关光谱区域，减少数据量</p>
       </div>
       <div class="cover-feature">
-        <h3>基线扣除</h3>
-        <p>利用 t&lt;0 时光谱信号的平均值作为基线，自动扣除零点漂移</p>
+        <div class="feat-icon">📏</div>
+        <h3>Baseline Subtraction</h3>
+        <p>利用 t&lt;0 信号均值作为基线，自动扣除零点漂移</p>
       </div>
       <div class="cover-feature">
-        <h3>啁啾校正</h3>
-        <p>支持半高点法和全局优化法，消除超快光谱中的群速度色散效应</p>
+        <div class="feat-icon">⚡</div>
+        <h3>Chirp Correction</h3>
+        <p>半高点法 / 全局优化法，消除群速度色散效应</p>
       </div>
       <div class="cover-feature">
-        <h3>动力学拟合</h3>
-        <p>单波长多指数衰减拟合（1/2/3指数），自动提取寿命分量和振幅</p>
+        <div class="feat-icon">📉</div>
+        <h3>Kinetic Fitting</h3>
+        <p>1/2/3 指数衰减拟合，Nelder-Mead 优化提取寿命分量</p>
       </div>
     </div>
+
     <div class="cover-notes">
-      <h3>使用须知</h3>
       <ul>
         <li>CSV 格式：第1行为时间(ps)，后续每行为「波长(nm), ΔA1, ΔA2, ...」</li>
-        <li>文件末尾的非数值文本会被自动忽略，无需手动删除</li>
+        <li>文件末尾非数值文本自动忽略，无需手动删除</li>
         <li>所有计算在浏览器本地完成，数据不会上传至任何服务器</li>
-        <li>啁啾校正的全局优化法计算量较大，大文件可能需要数秒</li>
-        <li>动力学拟合使用 Nelder-Mead 优化，建议从2指数开始尝试</li>
+        <li>全局优化法计算量较大，大文件可能需要数秒</li>
+        <li>动力学拟合建议从 2 指数开始尝试，观察 R² 再决定是否增加</li>
+        <li>支持导出 JSON / CSV / ASCII(.dat) / TSV 格式</li>
       </ul>
     </div>
+
     <div class="cover-footer">
-      制作者：TA-Preprocess-Web Team<br>
-      技术栈：纯前端 · Plotly.js · Nelder-Mead 优化器<br>
-      本工具仅供学术研究使用
+      <span>TA-Preprocess-Web</span> · 纯前端 · Plotly.js · Nelder-Mead Optimizer<br>
+      仅供学术研究使用 · LOCAL PROCESSING · ZERO DATA UPLOAD
     </div>
-    <button class="btn-enter" onclick="enterApp()">开始使用</button>
+
+    <button class="btn-enter" onclick="enterApp()">INITIALIZE</button>
   </div>
+
+  <div class="cover-version">v1.0.0</div>
+  <div class="cover-sys">SYS.STATUS: <span class="blink">ONLINE</span></div>
 </div>
 
 <div class="header">
@@ -175,5 +241,19 @@ body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #1
 </div>
 
 <script src="app.js"></script>
+<script>
+(function(){
+  const container = document.getElementById('particles');
+  for(let i = 0; i < 30; i++){
+    const p = document.createElement('div');
+    p.className = 'particle';
+    p.style.left = Math.random() * 100 + '%';
+    p.style.animationDuration = (4 + Math.random() * 8) + 's';
+    p.style.animationDelay = Math.random() * 6 + 's';
+    p.style.width = p.style.height = (1 + Math.random() * 2) + 'px';
+    container.appendChild(p);
+  }
+})();
+</script>
 </body>
 </html>
