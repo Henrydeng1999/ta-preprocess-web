@@ -425,6 +425,17 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   const divId = `result_${baseName}`;
   const methodName = chirpMethod === 'global' ? '全局优化法' : '半高点法';
 
+  let maxSigTime = 0, maxSigVal = 0;
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] < 0) continue;
+    let colSum = 0;
+    for (let i = 0; i < taAfter.length; i++) {
+      if (!isNaN(taAfter[i][j])) colSum += Math.abs(taAfter[i][j]);
+    }
+    if (colSum > maxSigVal) { maxSigVal = colSum; maxSigTime = time[j]; }
+  }
+  const maxTime = time[time.length - 1];
+
   let html = `<div class="card" id="${divId}">
     <h2>📄 ${fileName}</h2>
     <p style="font-size:13px;color:#888;">波长: ${wl[0].toFixed(1)} ~ ${wl[wl.length-1].toFixed(1)} nm | 时间: ${time[0].toFixed(3)} ~ ${time[time.length-1].toFixed(3)} ps | 数据: ${wl.length}×${time.length}</p>
@@ -470,11 +481,11 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
           </div>
           <div class="param-group">
             <label>拟合时间下限 (ps)</label>
-            <input type="number" id="${divId}_fitTMin" value="0" step="0.5">
+            <input type="number" id="${divId}_fitTMin" value="${maxSigTime.toFixed(2)}" step="0.5">
           </div>
           <div class="param-group">
             <label>拟合时间上限 (ps)</label>
-            <input type="number" id="${divId}_fitTMax" value="${tViewMax}" step="0.5">
+            <input type="number" id="${divId}_fitTMax" value="${maxTime.toFixed(2)}" step="0.5">
           </div>
         </div>
         <div style="text-align:center;margin-bottom:16px;">
