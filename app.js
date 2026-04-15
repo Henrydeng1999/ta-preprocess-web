@@ -753,7 +753,71 @@ function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   for (let i = 0; i < sFit.length; i++) ssTot += (sFit[i] - sMeanVal) ** 2;
   const r2 = 1 - result.fVal / ssTot;
 
-  return { params: finalParams, r2, tFit, sFit, nExp };
+  const nP = finalParams.length;
+  const nD = tFit.length;
+  const sigma2 = result.fVal / (nD - nP);
+
+  const eps = 1e-8;
+  const J = [];
+  for (let i = 0; i < nD; i++) {
+    const row = [];
+    for (let j = 0; j < nP; j++) {
+      const pPlus = finalParams.slice();
+      pPlus[j] += eps;
+      const fPlus = multiExpFunc(pPlus, tFit[i], nExp);
+      const fOrig = multiExpFunc(finalParams, tFit[i], nExp);
+      row.push((fPlus - fOrig) / eps);
+    }
+    J.push(row);
+  }
+
+  const JtJ = [];
+  for (let i = 0; i < nP; i++) {
+    JtJ[i] = [];
+    for (let j = 0; j < nP; j++) {
+      let s = 0;
+      for (let k = 0; k < nD; k++) s += J[k][i] * J[k][j];
+      JtJ[i][j] = s;
+    }
+  }
+
+  const covInv = JtJ;
+  const cov = invertMatrix(covInv);
+  const stdErrs = [];
+  if (cov) {
+    for (let i = 0; i < nP; i++) {
+      stdErrs.push(Math.sqrt(Math.max(0, sigma2 * cov[i][i])));
+    }
+  }
+
+  return { params: finalParams, r2, tFit, sFit, nExp, stdErrs };
+}
+
+function invertMatrix(M) {
+  const n = M.length;
+  const A = M.map((row, i) => row.map((v, j) => v + (i === j ? 1e-10 : 0)));
+  const I = [];
+  for (let i = 0; i < n; i++) {
+    I[i] = new Array(n).fill(0);
+    I[i][i] = 1;
+  }
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
+    }
+    [A[col], A[maxRow]] = [A[maxRow], A[col]];
+    [I[col], I[maxRow]] = [I[maxRow], I[col]];
+    if (Math.abs(A[col][col]) < 1e-14) return null;
+    const pivot = A[col][col];
+    for (let j = 0; j < n; j++) { A[col][j] /= pivot; I[col][j] /= pivot; }
+    for (let row = 0; row < n; row++) {
+      if (row === col) continue;
+      const factor = A[row][col];
+      for (let j = 0; j < n; j++) { A[row][j] -= factor * A[col][j]; I[row][j] -= factor * I[col][j]; }
+    }
+  }
+  return I;
 }
 
 function doKineticFit(baseName, divId) {
@@ -821,29 +885,45 @@ function doKineticFit(baseName, divId) {
     for (let k = 0; k < nExp; k++) {
       const A = fitResult.params[k * 2];
       const tau = fitResult.params[k * 2 + 1];
-      terms.push(`${(A * 1000).toFixed(2)}·exp(-t/${tau.toFixed(3)})`);
+      const sign = A >= 0 ? (k === 0 ? '' : ' + ') : (k === 0 ? '-' : ' - ');
+      terms.push(`${sign}${Math.abs(A * 1000).toFixed(2)}·exp(-t/${tau.toFixed(3)})`);
     }
     const offset = fitResult.params[fitResult.params.length - 1];
-    formula += terms.join(' + ');
-    formula += ` + ${(offset * 1000).toFixed(2)}`;
+    const offSign = offset >= 0 ? ' + ' : ' - ';
+    formula += terms.join('');
+    formula += `${offSign}${Math.abs(offset * 1000).toFixed(2)}`;
 
+    const hasStd = fitResult.stdErrs && fitResult.stdErrs.length > 0;
     let paramRows = '';
     for (let k = 0; k < nExp; k++) {
       const A = fitResult.params[k * 2];
       const tau = fitResult.params[k * 2 + 1];
-      paramRows += `<tr><td>τ${k + 1}</td><td>${tau.toFixed(4)} ps</td><td>A${k + 1}</td><td>${(A * 1000).toFixed(3)} mOD</td></tr>`;
+      let tauStr = `${tau.toFixed(4)} ps`;
+      let aStr = `${(A * 1000).toFixed(3)} mOD`;
+      if (hasStd) {
+        const tauStd = fitResult.stdErrs[k * 2 + 1];
+        const aStd = fitResult.stdErrs[k * 2];
+        tauStr += ` ± ${tauStd.toFixed(4)}`;
+        aStr += ` ± ${(aStd * 1000).toFixed(3)}`;
+      }
+      paramRows += `<tr><td>τ${k + 1}</td><td>${tauStr}</td><td>A${k + 1}</td><td>${aStr}</td></tr>`;
     }
-    paramRows += `<tr><td>偏移</td><td colspan="3">${(offset * 1000).toFixed(3)} mOD</td></tr>`;
+    let offStr = `${(offset * 1000).toFixed(3)} mOD`;
+    if (hasStd) {
+      const offStd = fitResult.stdErrs[fitResult.stdErrs.length - 1];
+      offStr += ` ± ${(offStd * 1000).toFixed(3)}`;
+    }
+    paramRows += `<tr><td>偏移</td><td colspan="3">${offStr}</td></tr>`;
 
     resultHtml += `
-      <div style="margin-bottom:12px;padding:10px;background:#f8f9fa;border-radius:6px;border-left:4px solid ${color};">
+      <div style="margin-bottom:12px;padding:12px;background:#ffffff;border-radius:6px;border-left:4px solid ${color};color:#222;">
         <strong style="color:${color};">${actualWl} nm</strong>
-        <table style="width:100%;font-size:12px;margin-top:6px;border-collapse:collapse;">
-          <tr style="font-weight:600;color:#666;"><td>参数</td><td>值</td><td>参数</td><td>值</td></tr>
+        <table style="width:100%;font-size:12px;margin-top:6px;border-collapse:collapse;color:#222;">
+          <tr style="font-weight:600;color:#555;"><td>参数</td><td>值</td><td>参数</td><td>值</td></tr>
           ${paramRows}
         </table>
-        <div style="margin-top:4px;font-size:12px;color:#666;">R² = ${fitResult.r2.toFixed(6)}</div>
-        <div style="margin-top:2px;font-size:11px;color:#999;font-family:monospace;">${formula}</div>
+        <div style="margin-top:4px;font-size:12px;color:#333;">R² = ${fitResult.r2.toFixed(6)}</div>
+        <div style="margin-top:2px;font-size:11px;color:#555;font-family:monospace;">${formula}</div>
       </div>`;
   });
 
