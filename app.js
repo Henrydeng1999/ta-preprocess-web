@@ -627,15 +627,15 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     { z: afterData.z, x: afterData.tPlot, y: wl, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
   ], {
     title: '校正前后对比',
-    grid: { columns: 2, rows: 1, pattern: 'independent' },
-    margin: { l: 50, r: 20, t: 40, b: 50 },
-    xaxis: { title: '时间 (ps)', domain: [0, 0.48] },
+    grid: { columns: 2, rows: 1, pattern: 'independent', xgap: 0.08 },
+    margin: { l: 60, r: 20, t: 40, b: 50 },
+    xaxis: { title: '时间 (ps)', domain: [0, 0.46] },
     yaxis: { title: '波长 (nm)' },
     xaxis2: { title: '时间 (ps)', anchor: 'y2' },
     yaxis2: { title: '波长 (nm)', anchor: 'x2' },
     annotations: [
-      { text: '校正前', x: 0.24, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } },
-      { text: '校正后', x: 0.76, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } }
+      { text: '校正前', x: 0.22, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } },
+      { text: '校正后', x: 0.78, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } }
     ]
   }, { responsive: true });
 
