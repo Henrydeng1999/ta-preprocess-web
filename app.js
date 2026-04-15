@@ -369,35 +369,47 @@ async function processAll() {
   const probeWavelengths = probeWlStr.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
 
   $('resultsArea').innerHTML = '';
+  $('processBtn').disabled = true;
   setStatus('⏳ 处理中...', 'info');
+
+  const yieldThread = () => new Promise(r => setTimeout(r, 0));
 
   for (let fi = 0; fi < uploadedFiles.length; fi++) {
     const file = uploadedFiles[fi];
-    setStatus(`⏳ 处理 ${file.name} (${fi + 1}/${uploadedFiles.length})...`, 'info');
+    setStatus(`⏳ 读取 ${file.name} (${fi + 1}/${uploadedFiles.length})...`, 'info');
+    await yieldThread();
 
-    await new Promise(resolve => {
+    const text = await new Promise(resolve => {
       const reader = new FileReader();
-      reader.onload = function(e) {
-        const text = e.target.result;
-        const { timeArray, wavelengthArray, TA2D } = parseCSV(text);
-        const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
-        const taBaseline = baselineSubtraction(timeArray, taCropped, nBaseline);
-        const taBeforeChirp = taBaseline.map(r => [...r]);
-
-        let chirpResult;
-        if (chirpMethod === 'global') {
-          chirpResult = chirpCorrectionGlobal(timeArray, wl, taBaseline);
-        } else {
-          chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
-        }
-        const { TA2D: taAfter, coeffs, t0PerWl } = chirpResult;
-
-        renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
-        resolve();
-      };
+      reader.onload = e => resolve(e.target.result);
       reader.readAsText(file, 'latin-1');
     });
+
+    setStatus(`⏳ 解析 ${file.name}...`, 'info');
+    await yieldThread();
+
+    const { timeArray, wavelengthArray, TA2D } = parseCSV(text);
+    const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
+    const taBaseline = baselineSubtraction(timeArray, taCropped, nBaseline);
+    const taBeforeChirp = taBaseline.map(r => [...r]);
+
+    setStatus(`⏳ 啁啾校正 ${file.name}（可能需要数秒）...`, 'info');
+    await yieldThread();
+
+    let chirpResult;
+    if (chirpMethod === 'global') {
+      chirpResult = chirpCorrectionGlobal(timeArray, wl, taBaseline);
+    } else {
+      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
+    }
+    const { TA2D: taAfter, coeffs, t0PerWl } = chirpResult;
+
+    setStatus(`⏳ 渲染结果 ${file.name}...`, 'info');
+    await yieldThread();
+
+    renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
   }
+  $('processBtn').disabled = false;
   setStatus('✅ 全部处理完成!', 'success');
 }
 
