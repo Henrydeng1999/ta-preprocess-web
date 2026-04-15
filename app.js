@@ -440,28 +440,42 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     <h2>📄 ${fileName}</h2>
     <p style="font-size:13px;color:#888;">波长: ${wl[0].toFixed(1)} ~ ${wl[wl.length-1].toFixed(1)} nm | 时间: ${time[0].toFixed(3)} ~ ${time[time.length-1].toFixed(3)} ps | 数据: ${wl.length}×${time.length}</p>
     <div class="tabs">
-      <div class="tab active" onclick="switchTab(this, '${divId}', 'tab2d')">2D伪彩图</div>
-      <div class="tab" onclick="switchTab(this, '${divId}', 'tabKinetics')">动力学曲线</div>
-      <div class="tab" onclick="switchTab(this, '${divId}', 'tabChirp')">啁啾校正</div>
+      <div class="tab active" onclick="switchTab(this, '${divId}', 'tabViz')">数据可视化</div>
+      <div class="tab" onclick="switchTab(this, '${divId}', 'tabSlice')">光谱切片</div>
       <div class="tab" onclick="switchTab(this, '${divId}', 'tabFit')">动力学拟合</div>
       <div class="tab" onclick="switchTab(this, '${divId}', 'tabDownload')">下载数据</div>
     </div>
-    <div class="tab-content active" id="${divId}_tab2d">
+    <div class="tab-content active" id="${divId}_tabViz">
+      <h3 style="font-size:14px;color:#ff6666;margin-bottom:8px;">2D 伪彩图</h3>
       <div class="plot-grid">
         <div class="plot-box"><h3>校正前</h3><div id="${divId}_before2d" style="width:100%;height:350px;"></div></div>
         <div class="plot-box"><h3>校正后</h3><div id="${divId}_after2d" style="width:100%;height:350px;"></div></div>
       </div>
-    </div>
-    <div class="tab-content" id="${divId}_tabKinetics">
+      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">动力学曲线</h3>
       <div class="plot-grid">
         <div class="plot-box"><h3>校正前</h3><div id="${divId}_beforeKin" style="width:100%;height:350px;"></div></div>
         <div class="plot-box"><h3>校正后</h3><div id="${divId}_afterKin" style="width:100%;height:350px;"></div></div>
       </div>
-    </div>
-    <div class="tab-content" id="${divId}_tabChirp">
+      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">啁啾校正</h3>
       <div class="plot-grid">
         <div class="plot-box"><h3>啁啾曲线</h3><div id="${divId}_chirpCurve" style="width:100%;height:350px;"></div></div>
         <div class="plot-box"><h3>校正前后对比</h3><div id="${divId}_chirpCompare" style="width:100%;height:350px;"></div></div>
+      </div>
+    </div>
+    <div class="tab-content" id="${divId}_tabSlice">
+      <div class="fit-controls">
+        <div class="params" style="margin-bottom:16px;">
+          <div class="param-group" style="grid-column:1/-1;">
+            <label>时间延迟 (逗号分隔, ps)</label>
+            <input type="text" id="${divId}_sliceTimes" value="0.1, 1, 10, 100, 1000, ${maxTime.toFixed(1)}">
+          </div>
+        </div>
+        <div style="text-align:center;margin-bottom:16px;">
+          <button class="btn btn-primary" onclick="doSpectralSlice('${baseName}', '${divId}')">📊 绘制光谱切片</button>
+        </div>
+      </div>
+      <div class="plot-box" style="min-height:400px;">
+        <div id="${divId}_slicePlot" style="width:100%;height:400px;"></div>
       </div>
     </div>
     <div class="tab-content" id="${divId}_tabFit">
@@ -487,6 +501,13 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
             <label>拟合时间上限 (ps)</label>
             <input type="number" id="${divId}_fitTMax" value="${maxTime.toFixed(2)}" step="0.5">
           </div>
+          <div class="param-group">
+            <label>时间轴标度</label>
+            <select id="${divId}_fitTimeScale">
+              <option value="linear">线性</option>
+              <option value="log">对数</option>
+            </select>
+          </div>
         </div>
         <div style="text-align:center;margin-bottom:16px;">
           <button class="btn btn-primary" onclick="doKineticFit('${baseName}', '${divId}')">🔬 开始拟合</button>
@@ -498,12 +519,20 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       <div id="${divId}_fitResult"></div>
     </div>
     <div class="tab-content" id="${divId}_tabDownload">
-      <p style="margin-bottom:12px;">处理后的数据支持以下格式下载：</p>
+      <h3 style="font-size:14px;color:#ff6666;margin-bottom:8px;">预处理数据下载</h3>
       <div class="download-section">
         <button class="btn btn-download" onclick="downloadJSON('${baseName}')">⬇️ JSON</button>
         <button class="btn btn-download" onclick="downloadCSV('${baseName}')">⬇️ CSV</button>
         <button class="btn btn-download" onclick="downloadASCII('${baseName}')">⬇️ ASCII (空格分隔)</button>
         <button class="btn btn-download" onclick="downloadTSV('${baseName}')">⬇️ TSV (Tab分隔)</button>
+      </div>
+      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">拟合结果下载</h3>
+      <div class="download-section">
+        <button class="btn btn-download" onclick="downloadFitCSV('${baseName}')">⬇️ 拟合结果 (Excel CSV)</button>
+      </div>
+      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">光谱切片下载</h3>
+      <div class="download-section">
+        <button class="btn btn-download" onclick="downloadSliceCSV('${baseName}')">⬇️ 光谱切片 (Excel CSV)</button>
       </div>
       <div style="margin-top:12px;font-size:13px;color:#888;" id="${divId}_info"></div>
     </div>
@@ -617,6 +646,74 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   }
 
   window[`data_${baseName}`] = { timeArray: time, wavelengthArray: wl, TA2D: taAfter, coeffs, t0PerWl };
+}
+
+function doSpectralSlice(baseName, divId) {
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+
+  const timesStr = $(`${divId}_sliceTimes`).value;
+  const delayTimes = timesStr.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+
+  if (delayTimes.length === 0) {
+    $(`${divId}_slicePlot`).innerHTML = '<div class="status status-error">请输入有效的时间延迟</div>';
+    return;
+  }
+
+  const time = data.timeArray;
+  const wl = data.wavelengthArray;
+  const ta = data.TA2D;
+
+  const colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
+  const traces = [];
+  const sliceData = [];
+
+  delayTimes.forEach((dt, pi) => {
+    let idxT = 0;
+    let minDiff = Infinity;
+    for (let j = 0; j < time.length; j++) {
+      if (Math.abs(time[j] - dt) < minDiff) { minDiff = Math.abs(time[j] - dt); idxT = j; }
+    }
+    const actualTime = time[idxT];
+    const spectrum = ta.map(row => row[idxT] * 1000);
+    const color = colors[pi % colors.length];
+
+    traces.push({
+      x: wl, y: spectrum,
+      mode: 'lines', name: `${actualTime.toFixed(2)} ps`,
+      line: { color, width: 2 }
+    });
+
+    sliceData.push({ time: actualTime, spectrum: spectrum.map(v => isNaN(v) ? '' : v) });
+  });
+
+  window[`sliceData_${baseName}`] = { wl, slices: sliceData };
+
+  Plotly.newPlot($(`${divId}_slicePlot`), traces, {
+    xaxis: { title: '波长 (nm)' },
+    yaxis: { title: 'ΔA (mOD)' },
+    title: '光谱切片',
+    margin: { l: 60, r: 20, t: 40, b: 50 },
+    legend: { font: { size: 10 } }
+  }, { responsive: true });
+}
+
+function downloadSliceCSV(baseName) {
+  const data = window[`sliceData_${baseName}`];
+  if (!data) return;
+
+  const headers = ['波长(nm)'];
+  for (const s of data.slices) headers.push(`${s.time.toFixed(2)}ps(mOD)`);
+
+  let csv = headers.join(',') + '\n';
+  for (let i = 0; i < data.wl.length; i++) {
+    const row = [data.wl[i].toFixed(2)];
+    for (const s of data.slices) row.push(s.spectrum[i]);
+    csv += row.join(',') + '\n';
+  }
+
+  const bom = '\uFEFF';
+  triggerDownload(bom + csv, `${baseName}_spectral_slices.csv`, 'text/csv;charset=utf-8');
 }
 
 function switchTab(el, divId, tabName) {
@@ -877,6 +974,7 @@ function doKineticFit(baseName, divId) {
   const nExp = parseInt($(`${divId}_fitNExp`).value);
   const tFitMin = parseFloat($(`${divId}_fitTMin`).value);
   const tFitMax = parseFloat($(`${divId}_fitTMax`).value);
+  const timeScale = $(`${divId}_fitTimeScale`).value;
 
   if (wavelengths.length === 0) {
     $(`${divId}_fitResult`).innerHTML = '<div class="status status-error">请输入有效的探测波长</div>';
@@ -979,22 +1077,15 @@ function doKineticFit(baseName, divId) {
   });
 
   Plotly.newPlot($(`${divId}_fitPlot`), traces, {
-    xaxis: { title: '时间 (ps)' },
+    xaxis: { title: '时间 (ps)', type: timeScale },
     yaxis: { title: 'ΔA (mOD)' },
     title: `${nExp}指数拟合`,
     margin: { l: 60, r: 20, t: 40, b: 50 },
-    shapes: [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }],
+    shapes: timeScale === 'linear' ? [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }] : [],
     legend: { font: { size: 10 } }
   }, { responsive: true });
 
   window[`fitResults_${baseName}`] = fitResultsStore;
-
-  if (fitResultsStore.length > 0) {
-    resultHtml += `
-      <div style="margin-top:16px;text-align:center;">
-        <button class="btn btn-download" onclick="downloadFitCSV('${baseName}')">⬇️ 下载拟合结果 (Excel CSV)</button>
-      </div>`;
-  }
 
   $(`${divId}_fitResult`).innerHTML = resultHtml;
 }
