@@ -383,8 +383,7 @@ async function processAll() {
   $('resultsArea').innerHTML = '';
   cancelProcessing = false;
   $('processBtn').disabled = true;
-  $('processBtn').textContent = '⏹ 取消处理';
-  $('processBtn').onclick = () => { cancelProcessing = true; };
+  $('cancelBtn').style.display = 'inline-block';
 
   const yieldThread = () => new Promise(r => setTimeout(r, 0));
   const totalFiles = uploadedFiles.length;
@@ -434,8 +433,7 @@ async function processAll() {
     renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
   }
   $('processBtn').disabled = false;
-  $('processBtn').textContent = '🚀 开始处理';
-  $('processBtn').onclick = processAll;
+  $('cancelBtn').style.display = 'none';
   if (cancelProcessing) {
     setStatus('⏹ 处理已取消', 'error');
     cancelProcessing = false;
