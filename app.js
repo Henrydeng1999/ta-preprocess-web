@@ -228,7 +228,7 @@ function applyChirpShift(time, wl, ta, coeffs) {
   return { TA2D: corrected, t0Fitted, refT0 };
 }
 
-function nelderMead(costFunc, x0, maxIter = 3000) {
+async function nelderMead(costFunc, x0, maxIter = 3000) {
   const n = x0.length;
   const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
   let simplex = [x0.slice()];
@@ -242,6 +242,8 @@ function nelderMead(costFunc, x0, maxIter = 3000) {
   }
   let iter = 0;
   while (iter < maxIter) {
+    if (cancelProcessing) break;
+    if (iter % 50 === 0) await new Promise(r => setTimeout(r, 0));
     let order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
     const best = order[0], worst = order[n], secondWorst = order[n - 1];
     const xBest = simplex[best], fBest = fVals[best];
@@ -293,7 +295,7 @@ function chirpCorrectionHalfHeight(time, wl, ta) {
   return { TA2D, coeffs, t0PerWl };
 }
 
-function chirpCorrectionGlobal(time, wl, ta) {
+async function chirpCorrectionGlobal(time, wl, ta) {
   const t0PerWl = findT0HalfHeight(time, ta, [-2.0, 2.0]);
   const validX = [], validY = [];
   for (let i = 0; i < wl.length; i++) {
@@ -344,7 +346,7 @@ function chirpCorrectionGlobal(time, wl, ta) {
     return -totalSharpness / nValidWl + reg;
   }
 
-  const result = nelderMead(costFunc, initialCoeffs, 3000);
+  const result = await nelderMead(costFunc, initialCoeffs, 3000);
   const optimalCoeffs = result.x;
   const { TA2D } = applyChirpShift(time, wl, ta, optimalCoeffs);
   return { TA2D, coeffs: optimalCoeffs, t0PerWl };
@@ -414,7 +416,7 @@ async function processAll() {
 
     let chirpResult;
     if (chirpMethod === 'global') {
-      chirpResult = chirpCorrectionGlobal(timeArray, wl, taBaseline);
+      chirpResult = await chirpCorrectionGlobal(timeArray, wl, taBaseline);
     } else {
       chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
     }
@@ -861,7 +863,7 @@ function multiExpFunc(params, t, nExp) {
   return y;
 }
 
-function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
+async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const fitIdx = [];
   for (let j = 0; j < time.length; j++) {
     if (time[j] >= tFitMin && time[j] <= tFitMax && !isNaN(signal[j])) {
@@ -896,7 +898,7 @@ function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
     return ss;
   }
 
-  const result = nelderMead(costFunc, x0, 5000);
+  const result = await nelderMead(costFunc, x0, 5000);
   const bestParams = result.x;
 
   for (let k = 0; k < nExp; k++) {
@@ -990,7 +992,7 @@ function invertMatrix(M) {
   return I;
 }
 
-function doKineticFit(baseName, divId) {
+async function doKineticFit(baseName, divId) {
   const data = window[`data_${baseName}`];
   if (!data) return;
 
@@ -1038,7 +1040,7 @@ function doKineticFit(baseName, divId) {
       marker: { color, size: 5 }
     });
 
-    const fitResult = fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
+    const fitResult = await fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
     if (!fitResult) {
       resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl}nm: 数据点不足，无法拟合</div>`;
       return;
