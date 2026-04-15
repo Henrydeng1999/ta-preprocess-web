@@ -36,7 +36,7 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
 .cover-divider { width: 100%; height: 1px; background: linear-gradient(90deg, transparent, #ff003c, transparent); margin: 28px 0; position: relative; }
 .cover-divider::after { content: '◆'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff003c; font-size: 10px; background: #0a0a0a; padding: 0 12px; }
 
-.cover-features { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; text-align: left; margin-bottom: 28px; }
+.cover-features { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; text-align: left; margin-bottom: 28px; }
 .cover-feature { background: rgba(255,0,60,0.04); border: 1px solid rgba(255,0,60,0.2); padding: 14px 16px; position: relative; transition: all 0.3s; }
 .cover-feature:hover { border-color: #ff003c; background: rgba(255,0,60,0.08); box-shadow: 0 0 20px rgba(255,0,60,0.15), inset 0 0 20px rgba(255,0,60,0.05); }
 .cover-feature::before { content: ''; position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: #ff003c; }
@@ -128,6 +128,7 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
       <span class="pipe-step">波长裁剪</span><span class="pipe-arrow">▸</span>
       <span class="pipe-step">基线扣除</span><span class="pipe-arrow">▸</span>
       <span class="pipe-step">啁啾校正</span><span class="pipe-arrow">▸</span>
+      <span class="pipe-step">光谱切片</span><span class="pipe-arrow">▸</span>
       <span class="pipe-step">动力学拟合</span><span class="pipe-arrow">▸</span>
       <span class="pipe-step">多格式导出</span>
     </div>
@@ -149,9 +150,19 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
         <p>半高点法 / 全局优化法，消除群速度色散效应</p>
       </div>
       <div class="cover-feature">
+        <div class="feat-icon">🌈</div>
+        <h3>Spectral Slice</h3>
+        <p>多时间延迟光谱切片可视化，自由选择时间点对比光谱演化</p>
+      </div>
+      <div class="cover-feature">
         <div class="feat-icon">📉</div>
         <h3>Kinetic Fitting</h3>
-        <p>1/2/3 指数衰减拟合，Nelder-Mead 优化提取寿命分量</p>
+        <p>1/2/3 指数衰减拟合，支持线性/对数时间轴，Nelder-Mead 优化提取寿命分量</p>
+      </div>
+      <div class="cover-feature">
+        <div class="feat-icon">💾</div>
+        <h3>Multi-format Export</h3>
+        <p>预处理数据 (JSON/CSV/ASCII/TSV)、拟合结果、光谱切片均可导出 Excel 兼容格式</p>
       </div>
     </div>
 
@@ -162,7 +173,9 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
         <li>所有计算在浏览器本地完成，数据不会上传至任何服务器</li>
         <li>全局优化法计算量较大，大文件可能需要数秒</li>
         <li>动力学拟合建议从 2 指数开始尝试，观察 R² 再决定是否增加</li>
-        <li>支持导出 JSON / CSV / ASCII(.dat) / TSV 格式</li>
+        <li>对数时间轴适合跨越多个数量级的衰减动力学</li>
+        <li>光谱切片默认时间：0.1, 1, 10, 100, 1000 ps 及数据最大时间</li>
+        <li>所有 CSV 导出均带 BOM，双击即可在 Excel 中打开不乱码</li>
       </ul>
     </div>
 
