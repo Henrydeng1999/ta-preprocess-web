@@ -360,6 +360,8 @@ function makeHeatmapData(time, wl, ta, tRange) {
   return { tPlot, z };
 }
 
+let cancelProcessing = false;
+
 async function processAll() {
   if (uploadedFiles.length === 0) return;
   const wlMin = parseFloat($('wlMin').value);
@@ -372,19 +374,24 @@ async function processAll() {
   const probeWavelengths = probeWlStr.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
 
   $('resultsArea').innerHTML = '';
+  cancelProcessing = false;
   $('processBtn').disabled = true;
+  $('processBtn').textContent = '⏹ 取消处理';
+  $('processBtn').onclick = () => { cancelProcessing = true; };
 
   const yieldThread = () => new Promise(r => setTimeout(r, 0));
   const totalFiles = uploadedFiles.length;
   const stepsPerFile = 4;
 
   for (let fi = 0; fi < totalFiles; fi++) {
+    if (cancelProcessing) break;
     const file = uploadedFiles[fi];
     const base = (fi / totalFiles) * 100;
     const step = (1 / totalFiles / stepsPerFile) * 100;
 
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 读取 ${file.name}...`, 'info', base + step * 0);
     await yieldThread();
+    if (cancelProcessing) break;
 
     const text = await new Promise(resolve => {
       const reader = new FileReader();
@@ -394,6 +401,7 @@ async function processAll() {
 
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${file.name}...`, 'info', base + step * 1);
     await yieldThread();
+    if (cancelProcessing) break;
 
     const { timeArray, wavelengthArray, TA2D } = parseCSV(text);
     const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
@@ -402,6 +410,7 @@ async function processAll() {
 
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 啁啾校正 ${file.name}（可能需要数秒）...`, 'info', base + step * 2);
     await yieldThread();
+    if (cancelProcessing) break;
 
     let chirpResult;
     if (chirpMethod === 'global') {
@@ -411,13 +420,21 @@ async function processAll() {
     }
     const { TA2D: taAfter, coeffs, t0PerWl } = chirpResult;
 
+    if (cancelProcessing) break;
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 渲染结果 ${file.name}...`, 'info', base + step * 3);
     await yieldThread();
 
     renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
   }
   $('processBtn').disabled = false;
-  setStatus('✅ 全部处理完成!', 'success', 100);
+  $('processBtn').textContent = '🚀 开始处理';
+  $('processBtn').onclick = processAll;
+  if (cancelProcessing) {
+    setStatus('⏹ 处理已取消', 'error');
+    cancelProcessing = false;
+  } else {
+    setStatus('✅ 全部处理完成!', 'success', 100);
+  }
 }
 
 function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths) {
