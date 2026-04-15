@@ -1,0 +1,573 @@
+let uploadedFiles = [];
+
+function $(id) { return document.getElementById(id); }
+
+$('uploadZone').addEventListener('click', () => $('fileInput').click());
+$('uploadZone').addEventListener('dragover', e => { e.preventDefault(); $('uploadZone').classList.add('dragover'); });
+$('uploadZone').addEventListener('dragleave', () => $('uploadZone').classList.remove('dragover'));
+$('uploadZone').addEventListener('drop', e => {
+  e.preventDefault();
+  $('uploadZone').classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
+$('fileInput').addEventListener('change', e => handleFiles(e.target.files));
+
+function handleFiles(files) {
+  for (let f of files) {
+    if (!uploadedFiles.find(u => u.name === f.name)) {
+      uploadedFiles.push(f);
+    }
+  }
+  renderFileList();
+  $('processBtn').disabled = uploadedFiles.length === 0;
+}
+
+function renderFileList() {
+  let html = '';
+  uploadedFiles.forEach((f, i) => {
+    const sizeMB = (f.size / 1024 / 1024).toFixed(2);
+    html += `<div class="file-item"><span class="name">📄 ${f.name}</span><span class="size">${sizeMB} MB</span><span><button class="btn" style="padding:4px 10px;font-size:12px;background:#dc3545;color:white;" onclick="removeFile(${i})">✕</button></span></div>`;
+  });
+  $('fileList').innerHTML = html;
+}
+
+function removeFile(idx) {
+  uploadedFiles.splice(idx, 1);
+  renderFileList();
+  $('processBtn').disabled = uploadedFiles.length === 0;
+}
+
+function setStatus(msg, type) {
+  $('statusArea').innerHTML = `<div class="status status-${type}">${msg}</div>`;
+}
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/);
+  const validLines = [];
+  for (let line of lines) {
+    const stripped = line.trim();
+    if (!stripped) continue;
+    const firstVal = stripped.split(',')[0].trim();
+    if (isNaN(parseFloat(firstVal))) break;
+    validLines.push(stripped.split(',').map(v => v.trim() === '' ? NaN : parseFloat(v)));
+  }
+  const nRows = validLines.length;
+  const nCols = validLines[0].length;
+  const timeArray = validLines[0].slice(1);
+  const wavelengthArray = [];
+  const TA2D = [];
+  for (let i = 1; i < nRows; i++) {
+    wavelengthArray.push(validLines[i][0]);
+    TA2D.push(validLines[i].slice(1));
+  }
+  return { timeArray, wavelengthArray, TA2D };
+}
+
+function cropWavelength(wl, ta, wlMin, wlMax) {
+  const idx = [];
+  const newWl = [];
+  for (let i = 0; i < wl.length; i++) {
+    if (wl[i] >= wlMin && wl[i] <= wlMax) {
+      const rowAllNaN = ta[i].every(v => isNaN(v));
+      if (!rowAllNaN) { idx.push(i); newWl.push(wl[i]); }
+    }
+  }
+  const newTA = idx.map(i => [...ta[i]]);
+  return { wavelengthArray: newWl, TA2D: newTA };
+}
+
+function baselineSubtraction(time, ta, nBaseline) {
+  let t0Idx = 0;
+  let minAbs = Infinity;
+  for (let i = 0; i < time.length; i++) {
+    if (Math.abs(time[i]) < minAbs) { minAbs = Math.abs(time[i]); t0Idx = i; }
+  }
+  const startIdx = Math.max(0, t0Idx - nBaseline);
+  const nTimes = time.length;
+  const result = ta.map(row => {
+    let sum = 0, count = 0;
+    for (let j = startIdx; j < t0Idx; j++) {
+      if (!isNaN(row[j])) { sum += row[j]; count++; }
+    }
+    const baseline = count > 0 ? sum / count : 0;
+    return row.map(v => isNaN(v) ? NaN : v - baseline);
+  });
+  return result;
+}
+
+function polyfit(x, y, order) {
+  const n = x.length;
+  const m = order + 1;
+  const A = [];
+  const b = [];
+  for (let i = 0; i < m; i++) {
+    A[i] = [];
+    for (let j = 0; j < m; j++) {
+      let sum = 0;
+      for (let k = 0; k < n; k++) sum += Math.pow(x[k], i + j);
+      A[i][j] = sum;
+    }
+    let sum = 0;
+    for (let k = 0; k < n; k++) sum += y[k] * Math.pow(x[k], i);
+    b[i] = sum;
+  }
+  for (let col = 0; col < m; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < m; row++) {
+      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
+    }
+    [A[col], A[maxRow]] = [A[maxRow], A[col]];
+    [b[col], b[maxRow]] = [b[maxRow], b[col]];
+    for (let row = col + 1; row < m; row++) {
+      const factor = A[row][col] / A[col][col];
+      for (let j = col; j < m; j++) A[row][j] -= factor * A[col][j];
+      b[row] -= factor * b[col];
+    }
+  }
+  const coeffs = new Array(m);
+  for (let i = m - 1; i >= 0; i--) {
+    coeffs[i] = b[i];
+    for (let j = i + 1; j < m; j++) coeffs[i] -= A[i][j] * coeffs[j];
+    coeffs[i] /= A[i][i];
+  }
+  return coeffs;
+}
+
+function polyval(coeffs, x) {
+  return x.map(xi => {
+    let val = 0;
+    for (let i = 0; i < coeffs.length; i++) val += coeffs[i] * Math.pow(xi, i);
+    return val;
+  });
+}
+
+function linspace(min, max, n) {
+  const step = (max - min) / (n - 1);
+  return Array.from({ length: n }, (_, i) => min + i * step);
+}
+
+function interp1d(xData, yData, xNew) {
+  return xNew.map(xn => {
+    if (isNaN(xn)) return NaN;
+    if (xn < xData[0] || xn > xData[xData.length - 1]) return NaN;
+    let lo = 0, hi = xData.length - 1;
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (xData[mid] <= xn) lo = mid; else hi = mid;
+    }
+    const t = (xn - xData[lo]) / (xData[hi] - xData[lo]);
+    return yData[lo] + t * (yData[hi] - yData[lo]);
+  });
+}
+
+function findT0HalfHeight(time, ta, searchRange) {
+  const t0List = [];
+  const tSearchMask = [];
+  const tSearch = [];
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] >= searchRange[0] && time[j] <= searchRange[1]) {
+      tSearchMask.push(j);
+      tSearch.push(time[j]);
+    }
+  }
+  for (let i = 0; i < ta.length; i++) {
+    const sig = tSearchMask.map(j => ta[i][j]);
+    const validIdx = sig.map((v, idx) => !isNaN(v) ? idx : -1).filter(idx => idx >= 0);
+    if (validIdx.length < 5) { t0List.push(NaN); continue; }
+    const tValid = validIdx.map(idx => tSearch[idx]);
+    const sValid = validIdx.map(idx => sig[idx]);
+    const absSig = sValid.map(v => Math.abs(v));
+    let peakIdx = 0, peakVal = 0;
+    for (let k = 0; k < absSig.length; k++) {
+      if (absSig[k] > peakVal) { peakVal = absSig[k]; peakIdx = k; }
+    }
+    if (peakVal < 1e-6) { t0List.push(NaN); continue; }
+    const halfVal = peakVal * 0.5;
+    let crossIdx = -1;
+    const searchStart = Math.max(0, peakIdx - 20);
+    for (let k = searchStart; k < peakIdx; k++) {
+      if (absSig[k] >= halfVal) { crossIdx = k; break; }
+    }
+    if (crossIdx === -1) { t0List.push(tValid[peakIdx]); continue; }
+    if (crossIdx > 0 && crossIdx < tValid.length) {
+      const t1 = tValid[crossIdx - 1], t2 = tValid[crossIdx];
+      const v1 = absSig[crossIdx - 1], v2 = absSig[crossIdx];
+      if (Math.abs(v2 - v1) > 1e-10) {
+        t0List.push(t1 + (halfVal - v1) / (v2 - v1) * (t2 - t1));
+      } else {
+        t0List.push(tValid[crossIdx]);
+      }
+    } else {
+      t0List.push(tValid[crossIdx]);
+    }
+  }
+  return t0List;
+}
+
+function applyChirpShift(time, wl, ta, coeffs) {
+  const t0Fitted = polyval(coeffs, wl);
+  const refT0 = t0Fitted.reduce((a, b) => a + b, 0) / t0Fitted.length;
+  const corrected = ta.map((row, i) => {
+    const dt = t0Fitted[i] - refT0;
+    const timeShifted = time.map(t => t - dt);
+    const validIdx = [];
+    const validX = [], validY = [];
+    for (let j = 0; j < row.length; j++) {
+      if (!isNaN(row[j])) { validX.push(timeShifted[j]); validY.push(row[j]); validIdx.push(j); }
+    }
+    if (validX.length < 3) return row.map(v => NaN);
+    return interp1d(validX, validY, time);
+  });
+  return { TA2D: corrected, t0Fitted, refT0 };
+}
+
+function nelderMead(costFunc, x0, maxIter = 3000) {
+  const n = x0.length;
+  const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
+  let simplex = [x0.slice()];
+  const f0 = costFunc(x0);
+  const fVals = [f0];
+  for (let i = 0; i < n; i++) {
+    const xi = x0.slice();
+    xi[i] += Math.abs(xi[i]) * 0.05 + 1e-6;
+    simplex.push(xi);
+    fVals.push(costFunc(xi));
+  }
+  let iter = 0;
+  while (iter < maxIter) {
+    let order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
+    const best = order[0], worst = order[n], secondWorst = order[n - 1];
+    const xBest = simplex[best], fBest = fVals[best];
+    const centroid = new Array(n).fill(0);
+    for (let i = 0; i < n + 1; i++) {
+      if (i === worst) continue;
+      for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
+    }
+    const xRef = centroid.map((c, j) => c + alpha * (c - simplex[worst][j]));
+    const fRef = costFunc(xRef);
+    let shrink = false;
+    if (fRef < fVals[secondWorst] && fRef >= fBest) {
+      simplex[worst] = xRef; fVals[worst] = fRef;
+    } else if (fRef < fBest) {
+      const xExp = centroid.map((c, j) => c + gamma * (xRef[j] - c));
+      const fExp = costFunc(xExp);
+      if (fExp < fRef) { simplex[worst] = xExp; fVals[worst] = fExp; }
+      else { simplex[worst] = xRef; fVals[worst] = fRef; }
+    } else {
+      const xCon = centroid.map((c, j) => c + rho * (simplex[worst][j] - c));
+      const fCon = costFunc(xCon);
+      if (fCon < fVals[worst]) { simplex[worst] = xCon; fVals[worst] = fCon; }
+      else { shrink = true; }
+    }
+    if (shrink) {
+      for (let i = 1; i < n + 1; i++) {
+        simplex[i] = xBest.map((b, j) => b + sigma * (simplex[i][j] - b));
+        fVals[i] = costFunc(simplex[i]);
+      }
+    }
+    const fMax = Math.max(...fVals), fMin = Math.min(...fVals);
+    if (Math.abs(fMax - fMin) < 1e-12) break;
+    iter++;
+  }
+  let bestIdx = 0;
+  for (let i = 1; i <= n; i++) { if (fVals[i] < fVals[bestIdx]) bestIdx = i; }
+  return { x: simplex[bestIdx], fVal: fVals[bestIdx], iterations: iter };
+}
+
+function chirpCorrectionHalfHeight(time, wl, ta) {
+  const t0PerWl = findT0HalfHeight(time, ta, [-2.0, 2.0]);
+  const validX = [], validY = [];
+  for (let i = 0; i < wl.length; i++) {
+    if (!isNaN(t0PerWl[i])) { validX.push(wl[i]); validY.push(t0PerWl[i]); }
+  }
+  if (validX.length < 3) return { TA2D: ta, coeffs: null, t0PerWl };
+  const coeffs = polyfit(validX, validY, 2);
+  const { TA2D } = applyChirpShift(time, wl, ta, coeffs);
+  return { TA2D, coeffs, t0PerWl };
+}
+
+function chirpCorrectionGlobal(time, wl, ta) {
+  const t0PerWl = findT0HalfHeight(time, ta, [-2.0, 2.0]);
+  const validX = [], validY = [];
+  for (let i = 0; i < wl.length; i++) {
+    if (!isNaN(t0PerWl[i])) { validX.push(wl[i]); validY.push(t0PerWl[i]); }
+  }
+  if (validX.length < 3) return { TA2D: ta, coeffs: null, t0PerWl };
+  const initialCoeffs = polyfit(validX, validY, 2);
+
+  const nWl = wl.length;
+  const validRows = ta.map(row => row.map(v => !isNaN(v)));
+  const tEvalIdx = [];
+  const tEval = [];
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] >= -0.5 && time[j] <= 0.5) { tEvalIdx.push(j); tEval.push(time[j]); }
+  }
+  const dtStep = tEval.length >= 2 ? (tEval[tEval.length - 1] - tEval[0]) / (tEval.length - 1) : 0.01;
+
+  function costFunc(coeffs) {
+    const t0Fit = polyval(coeffs, wl);
+    const refT0 = t0Fit.reduce((a, b) => a + b, 0) / t0Fit.length;
+    const dtShifts = t0Fit.map(t => t - refT0);
+    const maxShift = Math.max(...dtShifts.map(Math.abs));
+    if (maxShift > 5.0) return 1e10 * (1 + maxShift);
+    let totalSharpness = 0, nValidWl = 0;
+    for (let i = 0; i < nWl; i++) {
+      const dt = dtShifts[i];
+      const timeShifted = time.map(t => t - dt);
+      const vx = [], vy = [];
+      for (let j = 0; j < ta[i].length; j++) {
+        if (!isNaN(ta[i][j])) { vx.push(timeShifted[j]); vy.push(ta[i][j]); }
+      }
+      if (vx.length < 5) continue;
+      const sigAtEval = interp1d(vx, vy, tEval);
+      const validSig = sigAtEval.filter(v => !isNaN(v));
+      if (validSig.length < 2) continue;
+      let maxGrad = 0;
+      for (let k = 1; k < validSig.length; k++) {
+        const grad = Math.abs((validSig[k] - validSig[k - 1]) / dtStep);
+        if (grad > maxGrad) maxGrad = grad;
+      }
+      totalSharpness += maxGrad;
+      nValidWl++;
+    }
+    if (nValidWl === 0) return 1e10;
+    let reg = 0;
+    for (let k = 0; k < coeffs.length; k++) reg += (coeffs[k] - initialCoeffs[k]) ** 2;
+    reg = 0.01 * reg / coeffs.length;
+    return -totalSharpness / nValidWl + reg;
+  }
+
+  const result = nelderMead(costFunc, initialCoeffs, 3000);
+  const optimalCoeffs = result.x;
+  const { TA2D } = applyChirpShift(time, wl, ta, optimalCoeffs);
+  return { TA2D, coeffs: optimalCoeffs, t0PerWl };
+}
+
+function makeHeatmapData(time, wl, ta, tRange) {
+  const tMaskIdx = [];
+  const tPlot = [];
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] >= tRange[0] && time[j] <= tRange[1]) { tMaskIdx.push(j); tPlot.push(time[j]); }
+  }
+  const z = ta.map(row => tMaskIdx.map(j => isNaN(row[j]) ? null : row[j] * 1000));
+  return { tPlot, z };
+}
+
+async function processAll() {
+  if (uploadedFiles.length === 0) return;
+  const wlMin = parseFloat($('wlMin').value);
+  const wlMax = parseFloat($('wlMax').value);
+  const nBaseline = parseInt($('nBaseline').value);
+  const chirpMethod = $('chirpMethod').value;
+  const tViewMin = parseFloat($('tViewMin').value);
+  const tViewMax = parseFloat($('tViewMax').value);
+  const probeWlStr = $('probeWl').value;
+  const probeWavelengths = probeWlStr.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+
+  $('resultsArea').innerHTML = '';
+  setStatus('⏳ 处理中...', 'info');
+
+  for (let fi = 0; fi < uploadedFiles.length; fi++) {
+    const file = uploadedFiles[fi];
+    setStatus(`⏳ 处理 ${file.name} (${fi + 1}/${uploadedFiles.length})...`, 'info');
+
+    await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        const { timeArray, wavelengthArray, TA2D } = parseCSV(text);
+        const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
+        const taBaseline = baselineSubtraction(timeArray, taCropped, nBaseline);
+        const taBeforeChirp = taBaseline.map(r => [...r]);
+
+        let chirpResult;
+        if (chirpMethod === 'global') {
+          chirpResult = chirpCorrectionGlobal(timeArray, wl, taBaseline);
+        } else {
+          chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
+        }
+        const { TA2D: taAfter, coeffs, t0PerWl } = chirpResult;
+
+        renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
+        resolve();
+      };
+      reader.readAsText(file, 'latin-1');
+    });
+  }
+  setStatus('✅ 全部处理完成!', 'success');
+}
+
+function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths) {
+  const baseName = fileName.replace('.csv', '').replace(/ /g, '_');
+  const divId = `result_${baseName}`;
+  const methodName = chirpMethod === 'global' ? '全局优化法' : '半高点法';
+
+  let html = `<div class="card" id="${divId}">
+    <h2>📄 ${fileName}</h2>
+    <p style="font-size:13px;color:#888;">波长: ${wl[0].toFixed(1)} ~ ${wl[wl.length-1].toFixed(1)} nm | 时间: ${time[0].toFixed(3)} ~ ${time[time.length-1].toFixed(3)} ps | 数据: ${wl.length}×${time.length}</p>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab(this, '${divId}', 'tab2d')">2D伪彩图</div>
+      <div class="tab" onclick="switchTab(this, '${divId}', 'tabKinetics')">动力学曲线</div>
+      <div class="tab" onclick="switchTab(this, '${divId}', 'tabChirp')">啁啾校正</div>
+      <div class="tab" onclick="switchTab(this, '${divId}', 'tabDownload')">下载数据</div>
+    </div>
+    <div class="tab-content active" id="${divId}_tab2d">
+      <div class="plot-grid">
+        <div class="plot-box"><h3>校正前</h3><div id="${divId}_before2d" style="width:100%;height:350px;"></div></div>
+        <div class="plot-box"><h3>校正后</h3><div id="${divId}_after2d" style="width:100%;height:350px;"></div></div>
+      </div>
+    </div>
+    <div class="tab-content" id="${divId}_tabKinetics">
+      <div class="plot-grid">
+        <div class="plot-box"><h3>校正前</h3><div id="${divId}_beforeKin" style="width:100%;height:350px;"></div></div>
+        <div class="plot-box"><h3>校正后</h3><div id="${divId}_afterKin" style="width:100%;height:350px;"></div></div>
+      </div>
+    </div>
+    <div class="tab-content" id="${divId}_tabChirp">
+      <div class="plot-grid">
+        <div class="plot-box"><h3>啁啾曲线</h3><div id="${divId}_chirpCurve" style="width:100%;height:350px;"></div></div>
+        <div class="plot-box"><h3>校正前后对比</h3><div id="${divId}_chirpCompare" style="width:100%;height:350px;"></div></div>
+      </div>
+    </div>
+    <div class="tab-content" id="${divId}_tabDownload">
+      <p>处理后的数据可下载为JSON格式：</p>
+      <button class="btn btn-download" onclick="downloadJSON('${baseName}', '${divId}')">⬇️ 下载 ${baseName}_processed.json</button>
+      <div style="margin-top:12px;font-size:13px;color:#888;" id="${divId}_info"></div>
+    </div>
+  </div>`;
+
+  $('resultsArea').insertAdjacentHTML('beforeend', html);
+
+  const tRange = [tViewMin, tViewMax];
+
+  const beforeData = makeHeatmapData(time, wl, taBefore, tRange);
+  const afterData = makeHeatmapData(time, wl, taAfter, tRange);
+
+  const heatmapLayout = {
+    xaxis: { title: '时间 (ps)' },
+    yaxis: { title: '波长 (nm)' },
+    margin: { l: 60, r: 20, t: 30, b: 50 },
+    colorscale: 'RdBu',
+  };
+
+  Plotly.newPlot($(`${divId}_before2d`), [{
+    z: beforeData.z, x: beforeData.tPlot, y: wl, type: 'heatmap',
+    colorscale: 'RdBu', reversescale: true, zmid: 0,
+    colorbar: { title: 'mOD' }
+  }], { ...heatmapLayout, title: '校正前' }, { responsive: true });
+
+  Plotly.newPlot($(`${divId}_after2d`), [{
+    z: afterData.z, x: afterData.tPlot, y: wl, type: 'heatmap',
+    colorscale: 'RdBu', reversescale: true, zmid: 0,
+    colorbar: { title: 'mOD' }
+  }], { ...heatmapLayout, title: '校正后' }, { responsive: true });
+
+  const tMaskIdx = [];
+  const tPlot = [];
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] >= tViewMin && time[j] <= tViewMax) { tMaskIdx.push(j); tPlot.push(time[j]); }
+  }
+
+  const colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'];
+  const kinTracesBefore = [], kinTracesAfter = [];
+  probeWavelengths.forEach((pw, pi) => {
+    let idxWl = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < wl.length; i++) {
+      if (Math.abs(wl[i] - pw) < minDiff) { minDiff = Math.abs(wl[i] - pw); idxWl = i; }
+    }
+    const color = colors[pi % colors.length];
+    kinTracesBefore.push({
+      x: tPlot, y: tMaskIdx.map(j => taBefore[idxWl][j] * 1000),
+      name: `${pw}nm`, line: { color, dash: 'dash' }, opacity: 0.5
+    });
+    kinTracesAfter.push({
+      x: tPlot, y: tMaskIdx.map(j => taAfter[idxWl][j] * 1000),
+      name: `${pw}nm`, line: { color }
+    });
+  });
+
+  const kinLayout = {
+    xaxis: { title: '时间 (ps)' }, yaxis: { title: 'ΔA (mOD)' },
+    margin: { l: 60, r: 20, t: 30, b: 50 },
+    shapes: [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }],
+    legend: { font: { size: 10 } }
+  };
+
+  Plotly.newPlot($(`${divId}_beforeKin`), kinTracesBefore, { ...kinLayout, title: '校正前' }, { responsive: true });
+  Plotly.newPlot($(`${divId}_afterKin`), kinTracesAfter, { ...kinLayout, title: '校正后' }, { responsive: true });
+
+  const chirpTraces = [];
+  const validWl = [], validT0 = [];
+  for (let i = 0; i < wl.length; i++) {
+    if (!isNaN(t0PerWl[i])) { validWl.push(wl[i]); validT0.push(t0PerWl[i] * 1000); }
+  }
+  chirpTraces.push({ x: validWl, y: validT0, mode: 'markers', name: '半高点法t0', marker: { size: 4, opacity: 0.5, color: 'blue' } });
+
+  if (coeffs) {
+    const wlFine = linspace(wl[0], wl[wl.length - 1], 200);
+    const t0Fit = polyval(coeffs, wlFine).map(v => v * 1000);
+    chirpTraces.push({ x: wlFine, y: t0Fit, mode: 'lines', name: chirpMethod === 'global' ? '全局优化拟合' : '多项式拟合', line: { color: 'red', width: 2 } });
+    if (chirpMethod === 'global') {
+      const initCoeffs = polyfit(validWl, validT0.map(v => v / 1000), 2);
+      const t0Init = polyval(initCoeffs, wlFine).map(v => v * 1000);
+      chirpTraces.push({ x: wlFine, y: t0Init, mode: 'lines', name: '初始估计拟合', line: { color: 'green', dash: 'dash', width: 1.5 } });
+    }
+  }
+
+  Plotly.newPlot($(`${divId}_chirpCurve`), chirpTraces, {
+    xaxis: { title: '波长 (nm)' }, yaxis: { title: 't0 (fs)' },
+    title: '啁啾曲线', margin: { l: 60, r: 20, t: 40, b: 50 }
+  }, { responsive: true });
+
+  Plotly.newPlot($(`${divId}_chirpCompare`), [
+    { z: beforeData.z, x: beforeData.tPlot, y: wl, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
+    { z: afterData.z, x: afterData.tPlot, y: wl, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
+  ], {
+    title: '校正前后对比',
+    grid: { columns: 2, rows: 1, pattern: 'independent' },
+    margin: { l: 50, r: 20, t: 40, b: 50 },
+    xaxis: { title: '时间 (ps)', domain: [0, 0.48] },
+    yaxis: { title: '波长 (nm)' },
+    xaxis2: { title: '时间 (ps)', anchor: 'y2' },
+    yaxis2: { title: '波长 (nm)', anchor: 'x2' },
+    annotations: [
+      { text: '校正前', x: 0.24, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } },
+      { text: '校正后', x: 0.76, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } }
+    ]
+  }, { responsive: true });
+
+  if (coeffs) {
+    const validT0Fs = t0PerWl.filter(v => !isNaN(v)).map(v => v * 1000);
+    const refT0 = validT0Fs.reduce((a, b) => a + b, 0) / validT0Fs.length;
+    $(`${divId}_info`).innerHTML = `参考t0 = ${refT0.toFixed(1)} fs | 啁啾范围: ${Math.min(...validT0Fs).toFixed(1)} ~ ${Math.max(...validT0Fs).toFixed(1)} fs | 方法: ${methodName}`;
+  }
+
+  window[`data_${baseName}`] = { timeArray: time, wavelengthArray: wl, TA2D: taAfter, coeffs, t0PerWl };
+}
+
+function switchTab(el, divId, tabName) {
+  const parent = el.parentElement;
+  parent.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  const container = $(divId);
+  container.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+  $(`${divId}_${tabName}`).classList.add('active');
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+}
+
+function downloadJSON(baseName, divId) {
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+  const json = JSON.stringify({
+    time_array: data.timeArray,
+    wavelength_array: data.wavelengthArray,
+    TA_2D_data: data.TA2D,
+    chirp_coeffs: data.coeffs
+  });
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${baseName}_processed.json`;
+  a.click(); URL.revokeObjectURL(url);
+}
