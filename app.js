@@ -1022,7 +1022,8 @@ async function doKineticFit(baseName, divId) {
   let resultHtml = '';
   const fitResultsStore = [];
 
-  wavelengths.forEach((pw, pi) => {
+  for (let pi = 0; pi < wavelengths.length; pi++) {
+    const pw = wavelengths[pi];
     let idxWl = 0;
     let minDiff = Infinity;
     for (let i = 0; i < wl.length; i++) {
@@ -1048,7 +1049,7 @@ async function doKineticFit(baseName, divId) {
     const fitResult = await fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
     if (!fitResult) {
       resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl}nm: 数据点不足，无法拟合</div>`;
-      return;
+      continue;
     }
 
     const tFine = linspace(tFitMin, tFitMax, 500);
@@ -1106,7 +1107,7 @@ async function doKineticFit(baseName, divId) {
       </div>`;
 
     fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2 });
-  });
+  }
 
   Plotly.newPlot($(`${divId}_fitPlot`), traces, {
     xaxis: { title: '时间 (ps)', type: timeScale },
