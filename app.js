@@ -409,6 +409,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       <div class="tab active" onclick="switchTab(this, '${divId}', 'tab2d')">2D伪彩图</div>
       <div class="tab" onclick="switchTab(this, '${divId}', 'tabKinetics')">动力学曲线</div>
       <div class="tab" onclick="switchTab(this, '${divId}', 'tabChirp')">啁啾校正</div>
+      <div class="tab" onclick="switchTab(this, '${divId}', 'tabFit')">动力学拟合</div>
       <div class="tab" onclick="switchTab(this, '${divId}', 'tabDownload')">下载数据</div>
     </div>
     <div class="tab-content active" id="${divId}_tab2d">
@@ -428,6 +429,39 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
         <div class="plot-box"><h3>啁啾曲线</h3><div id="${divId}_chirpCurve" style="width:100%;height:350px;"></div></div>
         <div class="plot-box"><h3>校正前后对比</h3><div id="${divId}_chirpCompare" style="width:100%;height:350px;"></div></div>
       </div>
+    </div>
+    <div class="tab-content" id="${divId}_tabFit">
+      <div class="fit-controls">
+        <div class="params" style="margin-bottom:16px;">
+          <div class="param-group">
+            <label>探测波长 (逗号分隔, nm)</label>
+            <input type="text" id="${divId}_fitWlInput" value="${probeWavelengths.join(', ')}">
+          </div>
+          <div class="param-group">
+            <label>指数个数</label>
+            <select id="${divId}_fitNExp">
+              <option value="1">1指数</option>
+              <option value="2" selected>2指数</option>
+              <option value="3">3指数</option>
+            </select>
+          </div>
+          <div class="param-group">
+            <label>拟合时间下限 (ps)</label>
+            <input type="number" id="${divId}_fitTMin" value="0" step="0.5">
+          </div>
+          <div class="param-group">
+            <label>拟合时间上限 (ps)</label>
+            <input type="number" id="${divId}_fitTMax" value="${tViewMax}" step="0.5">
+          </div>
+        </div>
+        <div style="text-align:center;margin-bottom:16px;">
+          <button class="btn btn-primary" onclick="doKineticFit('${baseName}', '${divId}')">🔬 开始拟合</button>
+        </div>
+      </div>
+      <div class="plot-box" style="min-height:400px;">
+        <div id="${divId}_fitPlot" style="width:100%;height:400px;"></div>
+      </div>
+      <div id="${divId}_fitResult"></div>
     </div>
     <div class="tab-content" id="${divId}_tabDownload">
       <p>处理后的数据可下载为JSON格式：</p>
@@ -570,4 +604,180 @@ function downloadJSON(baseName, divId) {
   const a = document.createElement('a');
   a.href = url; a.download = `${baseName}_processed.json`;
   a.click(); URL.revokeObjectURL(url);
+}
+
+function multiExpFunc(params, t, nExp) {
+  let y = params[params.length - 1];
+  for (let k = 0; k < nExp; k++) {
+    y += params[k * 2] * Math.exp(-t / params[k * 2 + 1]);
+  }
+  return y;
+}
+
+function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
+  const fitIdx = [];
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] >= tFitMin && time[j] <= tFitMax && !isNaN(signal[j])) {
+      fitIdx.push(j);
+    }
+  }
+  if (fitIdx.length < nExp * 2 + 1) return null;
+
+  const tFit = fitIdx.map(j => time[j]);
+  const sFit = fitIdx.map(j => signal[j]);
+
+  const sMax = Math.max(...sFit.map(Math.abs));
+  const sMean = sFit.reduce((a, b) => a + b, 0) / sFit.length;
+
+  let x0 = [];
+  const tauGuesses = [1.0, 0.3, 5.0];
+  for (let k = 0; k < nExp; k++) {
+    x0.push(sMax / nExp * (k === 0 ? 1 : 0.5));
+    x0.push(tauGuesses[k]);
+  }
+  x0.push(0);
+
+  function costFunc(params) {
+    let ss = 0;
+    for (let i = 0; i < tFit.length; i++) {
+      const yPred = multiExpFunc(params, tFit[i], nExp);
+      ss += (yPred - sFit[i]) ** 2;
+    }
+    for (let k = 0; k < nExp; k++) {
+      if (params[k * 2 + 1] < 0.001) ss += 1e6;
+    }
+    return ss;
+  }
+
+  const result = nelderMead(costFunc, x0, 5000);
+  const bestParams = result.x;
+
+  for (let k = 0; k < nExp; k++) {
+    if (bestParams[k * 2 + 1] < 0) {
+      bestParams[k * 2 + 1] = Math.abs(bestParams[k * 2 + 1]);
+      bestParams[k * 2] = -bestParams[k * 2];
+    }
+  }
+
+  const sorted = [];
+  for (let k = 0; k < nExp; k++) {
+    sorted.push({ A: bestParams[k * 2], tau: bestParams[k * 2 + 1] });
+  }
+  sorted.sort((a, b) => a.tau - b.tau);
+
+  const finalParams = [];
+  for (const item of sorted) {
+    finalParams.push(item.A, item.tau);
+  }
+  finalParams.push(bestParams[bestParams.length - 1]);
+
+  let ssTot = 0;
+  const sMeanVal = sFit.reduce((a, b) => a + b, 0) / sFit.length;
+  for (let i = 0; i < sFit.length; i++) ssTot += (sFit[i] - sMeanVal) ** 2;
+  const r2 = 1 - result.fVal / ssTot;
+
+  return { params: finalParams, r2, tFit, sFit, nExp };
+}
+
+function doKineticFit(baseName, divId) {
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+
+  const wlInput = $(`${divId}_fitWlInput`).value;
+  const wavelengths = wlInput.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+  const nExp = parseInt($(`${divId}_fitNExp`).value);
+  const tFitMin = parseFloat($(`${divId}_fitTMin`).value);
+  const tFitMax = parseFloat($(`${divId}_fitTMax`).value);
+
+  if (wavelengths.length === 0) {
+    $(`${divId}_fitResult`).innerHTML = '<div class="status status-error">请输入有效的探测波长</div>';
+    return;
+  }
+
+  const time = data.timeArray;
+  const wl = data.wavelengthArray;
+  const ta = data.TA2D;
+
+  const colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'];
+  const traces = [];
+  let resultHtml = '';
+
+  wavelengths.forEach((pw, pi) => {
+    let idxWl = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < wl.length; i++) {
+      if (Math.abs(wl[i] - pw) < minDiff) { minDiff = Math.abs(wl[i] - pw); idxWl = i; }
+    }
+    const actualWl = wl[idxWl];
+    const signal = ta[idxWl];
+
+    const tMaskIdx = [];
+    const tPlot = [];
+    for (let j = 0; j < time.length; j++) {
+      if (time[j] >= tFitMin && time[j] <= tFitMax) { tMaskIdx.push(j); tPlot.push(time[j]); }
+    }
+    const sigPlot = tMaskIdx.map(j => signal[j] * 1000);
+
+    const color = colors[pi % colors.length];
+    traces.push({
+      x: tPlot, y: sigPlot,
+      mode: 'markers', name: `${actualWl}nm 数据`,
+      marker: { color, size: 5 }
+    });
+
+    const fitResult = fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
+    if (!fitResult) {
+      resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl}nm: 数据点不足，无法拟合</div>`;
+      return;
+    }
+
+    const tFine = linspace(tFitMin, tFitMax, 500);
+    const yFine = tFine.map(t => multiExpFunc(fitResult.params, t, nExp) * 1000);
+    traces.push({
+      x: tFine, y: yFine,
+      mode: 'lines', name: `${actualWl}nm 拟合`,
+      line: { color, width: 2 }
+    });
+
+    let formula = `ΔA(t) = `;
+    const terms = [];
+    for (let k = 0; k < nExp; k++) {
+      const A = fitResult.params[k * 2];
+      const tau = fitResult.params[k * 2 + 1];
+      terms.push(`${(A * 1000).toFixed(2)}·exp(-t/${tau.toFixed(3)})`);
+    }
+    const offset = fitResult.params[fitResult.params.length - 1];
+    formula += terms.join(' + ');
+    formula += ` + ${(offset * 1000).toFixed(2)}`;
+
+    let paramRows = '';
+    for (let k = 0; k < nExp; k++) {
+      const A = fitResult.params[k * 2];
+      const tau = fitResult.params[k * 2 + 1];
+      paramRows += `<tr><td>τ${k + 1}</td><td>${tau.toFixed(4)} ps</td><td>A${k + 1}</td><td>${(A * 1000).toFixed(3)} mOD</td></tr>`;
+    }
+    paramRows += `<tr><td>偏移</td><td colspan="3">${(offset * 1000).toFixed(3)} mOD</td></tr>`;
+
+    resultHtml += `
+      <div style="margin-bottom:12px;padding:10px;background:#f8f9fa;border-radius:6px;border-left:4px solid ${color};">
+        <strong style="color:${color};">${actualWl} nm</strong>
+        <table style="width:100%;font-size:12px;margin-top:6px;border-collapse:collapse;">
+          <tr style="font-weight:600;color:#666;"><td>参数</td><td>值</td><td>参数</td><td>值</td></tr>
+          ${paramRows}
+        </table>
+        <div style="margin-top:4px;font-size:12px;color:#666;">R² = ${fitResult.r2.toFixed(6)}</div>
+        <div style="margin-top:2px;font-size:11px;color:#999;font-family:monospace;">${formula}</div>
+      </div>`;
+  });
+
+  Plotly.newPlot($(`${divId}_fitPlot`), traces, {
+    xaxis: { title: '时间 (ps)' },
+    yaxis: { title: 'ΔA (mOD)' },
+    title: `${nExp}指数拟合`,
+    margin: { l: 60, r: 20, t: 40, b: 50 },
+    shapes: [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }],
+    legend: { font: { size: 10 } }
+  }, { responsive: true });
+
+  $(`${divId}_fitResult`).innerHTML = resultHtml;
 }
