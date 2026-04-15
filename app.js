@@ -522,11 +522,11 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
           </div>
           <div class="param-group">
             <label>拟合时间下限 (ps)</label>
-            <input type="number" id="${divId}_fitTMin" value="${maxSigTime.toFixed(2)}" step="${medianDt.toFixed(6)}">
+            <input type="number" id="${divId}_fitTMin" value="${maxSigTime.toFixed(2)}" step="${medianDt.toFixed(6)}" min="${time[0].toFixed(6)}" max="${time[time.length-1].toFixed(6)}">
           </div>
           <div class="param-group">
             <label>拟合时间上限 (ps)</label>
-            <input type="number" id="${divId}_fitTMax" value="${maxTime.toFixed(2)}" step="${medianDt.toFixed(6)}">
+            <input type="number" id="${divId}_fitTMax" value="${maxTime.toFixed(2)}" step="${medianDt.toFixed(6)}" min="${time[0].toFixed(6)}" max="${time[time.length-1].toFixed(6)}">
           </div>
           <div class="param-group">
             <label>时间轴标度</label>
@@ -999,8 +999,8 @@ async function doKineticFit(baseName, divId) {
   const wlInput = $(`${divId}_fitWlInput`).value;
   const wavelengths = wlInput.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
   const nExp = parseInt($(`${divId}_fitNExp`).value);
-  const tFitMin = parseFloat($(`${divId}_fitTMin`).value);
-  const tFitMax = parseFloat($(`${divId}_fitTMax`).value);
+  const tFitMin = Math.max(parseFloat($(`${divId}_fitTMin`).value), data.timeArray[0]);
+  const tFitMax = Math.min(parseFloat($(`${divId}_fitTMax`).value), data.timeArray[data.timeArray.length - 1]);
   const timeScale = $(`${divId}_fitTimeScale`).value;
 
   if (wavelengths.length === 0) {
