@@ -41,8 +41,11 @@ function removeFile(idx) {
   $('processBtn').disabled = uploadedFiles.length === 0;
 }
 
-function setStatus(msg, type) {
-  $('statusArea').innerHTML = `<div class="status status-${type}">${msg}</div>`;
+function setStatus(msg, type, progress) {
+  const bar = progress !== undefined
+    ? `<div class="progress-bar"><div class="fill" style="width:${Math.min(100, Math.max(0, progress)).toFixed(1)}%"></div></div>`
+    : '';
+  $('statusArea').innerHTML = `<div class="status status-${type}">${msg}${bar}</div>`;
 }
 
 function parseCSV(text) {
@@ -370,13 +373,17 @@ async function processAll() {
 
   $('resultsArea').innerHTML = '';
   $('processBtn').disabled = true;
-  setStatus('⏳ 处理中...', 'info');
 
   const yieldThread = () => new Promise(r => setTimeout(r, 0));
+  const totalFiles = uploadedFiles.length;
+  const stepsPerFile = 4;
 
-  for (let fi = 0; fi < uploadedFiles.length; fi++) {
+  for (let fi = 0; fi < totalFiles; fi++) {
     const file = uploadedFiles[fi];
-    setStatus(`⏳ 读取 ${file.name} (${fi + 1}/${uploadedFiles.length})...`, 'info');
+    const base = (fi / totalFiles) * 100;
+    const step = (1 / totalFiles / stepsPerFile) * 100;
+
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 读取 ${file.name}...`, 'info', base + step * 0);
     await yieldThread();
 
     const text = await new Promise(resolve => {
@@ -385,7 +392,7 @@ async function processAll() {
       reader.readAsText(file, 'latin-1');
     });
 
-    setStatus(`⏳ 解析 ${file.name}...`, 'info');
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${file.name}...`, 'info', base + step * 1);
     await yieldThread();
 
     const { timeArray, wavelengthArray, TA2D } = parseCSV(text);
@@ -393,7 +400,7 @@ async function processAll() {
     const taBaseline = baselineSubtraction(timeArray, taCropped, nBaseline);
     const taBeforeChirp = taBaseline.map(r => [...r]);
 
-    setStatus(`⏳ 啁啾校正 ${file.name}（可能需要数秒）...`, 'info');
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 啁啾校正 ${file.name}（可能需要数秒）...`, 'info', base + step * 2);
     await yieldThread();
 
     let chirpResult;
@@ -404,13 +411,13 @@ async function processAll() {
     }
     const { TA2D: taAfter, coeffs, t0PerWl } = chirpResult;
 
-    setStatus(`⏳ 渲染结果 ${file.name}...`, 'info');
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 渲染结果 ${file.name}...`, 'info', base + step * 3);
     await yieldThread();
 
     renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
   }
   $('processBtn').disabled = false;
-  setStatus('✅ 全部处理完成!', 'success');
+  setStatus('✅ 全部处理完成!', 'success', 100);
 }
 
 function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths) {
