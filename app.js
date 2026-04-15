@@ -436,6 +436,14 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   }
   const maxTime = time[time.length - 1];
 
+  const timeDiffs = [];
+  for (let j = 1; j < time.length; j++) {
+    const dt = time[j] - time[j - 1];
+    if (dt > 0) timeDiffs.push(dt);
+  }
+  timeDiffs.sort((a, b) => a - b);
+  const medianDt = timeDiffs.length > 0 ? timeDiffs[Math.floor(timeDiffs.length / 2)] : 0.5;
+
   let html = `<div class="card" id="${divId}">
     <h2>📄 ${fileName}</h2>
     <p style="font-size:13px;color:#888;">波长: ${wl[0].toFixed(1)} ~ ${wl[wl.length-1].toFixed(1)} nm | 时间: ${time[0].toFixed(3)} ~ ${time[time.length-1].toFixed(3)} ps | 数据: ${wl.length}×${time.length}</p>
@@ -495,11 +503,11 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
           </div>
           <div class="param-group">
             <label>拟合时间下限 (ps)</label>
-            <input type="number" id="${divId}_fitTMin" value="${maxSigTime.toFixed(2)}" step="0.5">
+            <input type="number" id="${divId}_fitTMin" value="${maxSigTime.toFixed(2)}" step="${medianDt.toFixed(6)}">
           </div>
           <div class="param-group">
             <label>拟合时间上限 (ps)</label>
-            <input type="number" id="${divId}_fitTMax" value="${maxTime.toFixed(2)}" step="0.5">
+            <input type="number" id="${divId}_fitTMax" value="${maxTime.toFixed(2)}" step="${medianDt.toFixed(6)}">
           </div>
           <div class="param-group">
             <label>时间轴标度</label>
