@@ -683,6 +683,43 @@ function downloadTSV(baseName) {
   triggerDownload(tsv, `${baseName}_processed.tsv`, 'text/tab-separated-values');
 }
 
+function downloadFitCSV(baseName) {
+  const results = window[`fitResults_${baseName}`];
+  if (!results || results.length === 0) return;
+
+  const maxNExp = Math.max(...results.map(r => r.nExp));
+  const headers = ['波长(nm)', '指数个数', 'R²'];
+  for (let k = 0; k < maxNExp; k++) {
+    headers.push(`τ${k + 1}(ps)`, `τ${k + 1}标准差`, `A${k + 1}(mOD)`, `A${k + 1}标准差(mOD)`);
+  }
+  headers.push('偏移(mOD)', '偏移标准差(mOD)');
+
+  let csv = headers.join(',') + '\n';
+  for (const r of results) {
+    const row = [r.wavelength.toFixed(2), r.nExp, r.r2.toFixed(6)];
+    for (let k = 0; k < maxNExp; k++) {
+      if (k < r.nExp) {
+        const tau = r.params[k * 2 + 1];
+        const A = r.params[k * 2] * 1000;
+        const hasStd = r.stdErrs && r.stdErrs.length > 0;
+        const tauStd = hasStd ? r.stdErrs[k * 2 + 1] : '';
+        const aStd = hasStd ? r.stdErrs[k * 2] * 1000 : '';
+        row.push(tau.toFixed(6), hasStd ? tauStd.toFixed(6) : '', A.toFixed(4), hasStd ? aStd.toFixed(4) : '');
+      } else {
+        row.push('', '', '', '');
+      }
+    }
+    const offset = r.params[r.params.length - 1] * 1000;
+    const hasStd = r.stdErrs && r.stdErrs.length > 0;
+    const offStd = hasStd ? r.stdErrs[r.stdErrs.length - 1] * 1000 : '';
+    row.push(offset.toFixed(4), hasStd ? offStd.toFixed(4) : '');
+    csv += row.join(',') + '\n';
+  }
+
+  const bom = '\uFEFF';
+  triggerDownload(bom + csv, `${baseName}_fit_results.csv`, 'text/csv;charset=utf-8');
+}
+
 function multiExpFunc(params, t, nExp) {
   let y = params[params.length - 1];
   for (let k = 0; k < nExp; k++) {
@@ -842,6 +879,7 @@ function doKineticFit(baseName, divId) {
   const colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'];
   const traces = [];
   let resultHtml = '';
+  const fitResultsStore = [];
 
   wavelengths.forEach((pw, pi) => {
     let idxWl = 0;
@@ -925,6 +963,8 @@ function doKineticFit(baseName, divId) {
         <div style="margin-top:4px;font-size:12px;color:#333;">R² = ${fitResult.r2.toFixed(6)}</div>
         <div style="margin-top:2px;font-size:11px;color:#555;font-family:monospace;">${formula}</div>
       </div>`;
+
+    fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2 });
   });
 
   Plotly.newPlot($(`${divId}_fitPlot`), traces, {
@@ -935,6 +975,15 @@ function doKineticFit(baseName, divId) {
     shapes: [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }],
     legend: { font: { size: 10 } }
   }, { responsive: true });
+
+  window[`fitResults_${baseName}`] = fitResultsStore;
+
+  if (fitResultsStore.length > 0) {
+    resultHtml += `
+      <div style="margin-top:16px;text-align:center;">
+        <button class="btn btn-download" onclick="downloadFitCSV('${baseName}')">⬇️ 下载拟合结果 (Excel CSV)</button>
+      </div>`;
+  }
 
   $(`${divId}_fitResult`).innerHTML = resultHtml;
 }
