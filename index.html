@@ -147,7 +147,7 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
       <div class="cover-feature">
         <div class="feat-icon">⚡</div>
         <h3>Chirp Correction</h3>
-        <p>半高点法 / 全局优化法，消除群速度色散效应</p>
+        <p>半高点法 / 全局优化法 / 手动选点法，消除群速度色散效应</p>
       </div>
       <div class="cover-feature">
         <div class="feat-icon">🌈</div>
@@ -182,7 +182,7 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
     <button class="btn-enter" id="enterBtn">INITIALIZE</button>
   </div>
 
-  <div class="cover-version">v1.2.0</div>
+  <div class="cover-version">v1.3.0</div>
   <div class="cover-sys">SYS.STATUS: <span class="blink">ONLINE</span></div>
 </div>
 
@@ -212,6 +212,7 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
         <select id="chirpMethod">
           <option value="half_height">半高点法</option>
           <option value="global" selected>全局优化法</option>
+          <option value="manual">手动选点法</option>
         </select>
       </div>
       <div class="param-group">
@@ -225,6 +226,15 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
       <div class="param-group">
         <label>探测波长 (逗号分隔, nm)</label>
         <input type="text" id="probeWl" value="480, 520, 560, 600, 640">
+      </div>
+      <div class="param-group" id="manualFitOrderGroup" style="display:none">
+        <label>手动选点拟合阶数</label>
+        <select id="manualFitOrder">
+          <option value="2">2 阶（抛物线，≥3点）</option>
+          <option value="3" selected>3 阶（≥4点）</option>
+          <option value="4">4 阶（≥5点）</option>
+          <option value="5">5 阶（≥6点）</option>
+        </select>
       </div>
     </div>
   </div>
@@ -250,7 +260,7 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
 
 <div style="position:fixed;bottom:12px;right:16px;font-size:11px;color:#777;z-index:999;letter-spacing:1px;font-family:'Courier New',monospace;">v1.0.1</div>
 
-<script src="app.js?v=1.2.0"></script>
+<script src="app.js?v=1.3.0"></script>
 <script>
 (function(){
   const container = document.getElementById('particles');

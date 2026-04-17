@@ -185,6 +185,15 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   const enterBtn = document.getElementById('enterBtn');
   if (enterBtn) enterBtn.addEventListener('click', enterApp);
+
+  // Show/hide manual fit order selector based on chirp method
+  const chirpSel = $('chirpMethod');
+  const orderGroup = $('manualFitOrderGroup');
+  if (chirpSel && orderGroup) {
+    chirpSel.addEventListener('change', () => {
+      orderGroup.style.display = chirpSel.value === 'manual' ? '' : 'none';
+    });
+  }
 });
 
 $('uploadZone').addEventListener('click', () => $('fileInput').click());
@@ -735,6 +744,11 @@ async function processAll() {
     let chirpResult;
     if (chirpMethod === 'global') {
       chirpResult = await chirpCorrectionGlobal(timeArray, wl, taBaseline);
+    } else if (chirpMethod === 'manual') {
+      // Manual mode: use half-height to get initial t0 estimates, skip actual correction
+      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
+      // Override: no correction applied yet, just the raw data + t0 estimates for reference
+      chirpResult = { TA2D: taBaseline, coeffs: null, t0PerWl: chirpResult.t0PerWl };
     } else {
       chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
     }
@@ -759,7 +773,7 @@ async function processAll() {
 function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths) {
   const baseName = fileName.replace('.csv', '').replace(/ /g, '_');
   const divId = `result_${baseName}`;
-  const methodName = chirpMethod === 'global' ? '全局优化法' : '半高点法';
+  const methodName = chirpMethod === 'global' ? '全局优化法' : chirpMethod === 'manual' ? '手动选点法' : '半高点法';
 
   let maxSigTime = 0, maxSigVal = 0;
   for (let j = 0; j < time.length; j++) {
@@ -801,8 +815,18 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
         <div class="plot-box"><h3>校正后</h3><div id="${divId}_afterKin" style="width:100%;height:350px;"></div></div>
       </div>
       <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">啁啾校正</h3>
+      ${chirpMethod === 'manual' ? `
+      <div id="${divId}_manualPanel" style="background:#1a2a1a;border:1px solid #3a5a3a;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
+        <p style="font-size:13px;color:#8f8;margin-bottom:8px;">🖱️ 点击啁啾曲线图添加控制点（至少选 ${parseInt($('manualFitOrder')?.value || 3) + 1} 个），然后点击「应用拟合」</p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn btn-primary" id="${divId}_applyManual" onclick="applyManualChirp('${baseName}','${divId}')" disabled>✅ 应用拟合</button>
+          <button class="btn" style="background:#555;color:#ddd;" onclick="undoLastManualPoint('${divId}')">↩ 撤销上一点</button>
+          <button class="btn" style="background:#555;color:#ddd;" onclick="clearManualPoints('${divId}')">🗑 清除所有点</button>
+          <span id="${divId}_pointCount" style="font-size:12px;color:#aaa;margin-left:8px;">已选 0 个点</span>
+        </div>
+      </div>` : ''}
       <div class="plot-grid">
-        <div class="plot-box"><h3>啁啾曲线</h3><div id="${divId}_chirpCurve" style="width:100%;height:350px;"></div></div>
+        <div class="plot-box"><h3>啁啾曲线${chirpMethod === 'manual' ? '（点击添加控制点）' : ''}</h3><div id="${divId}_chirpCurve" style="width:100%;height:350px;"></div></div>
         <div class="plot-box"><h3>校正前后对比</h3><div id="${divId}_chirpCompare" style="width:100%;height:350px;"></div></div>
       </div>
     </div>
@@ -972,10 +996,33 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     }
   }
 
+  // Manual mode: add trace for user-selected points + click handler
+  if (chirpMethod === 'manual') {
+    chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: '#ff0', symbol: 'star' }, text: [], textposition: 'top center', textfont: { size: 9, color: '#ff0' } });
+  }
+
   Plotly.newPlot($(`${divId}_chirpCurve`), chirpTraces, {
     xaxis: { title: '波长 (nm)' }, yaxis: { title: 't0 (fs)' },
-    title: '啁啾曲线', margin: { l: 60, r: 20, t: 40, b: 50 }
+    title: '啁啾曲线', margin: { l: 60, r: 20, t: 40, b: 50 },
+    clickmode: 'event+select'
   }, { responsive: true });
+
+  // Manual chirp: set up click-to-add-point interaction
+  if (chirpMethod === 'manual') {
+    if (!window._manualChirpData) window._manualChirpData = {};
+    window._manualChirpData[divId] = { points: [], baseName, wl, time, taBefore };
+
+    const chirpEl = $(`${divId}_chirpCurve`);
+    chirpEl.on('plotly_click', function(eventData) {
+      const pt = eventData.points[0];
+      if (!pt) return;
+      const xVal = pt.x;
+      const yVal = pt.y;
+      const md = window._manualChirpData[divId];
+      md.points.push({ wl: xVal, t0: yVal });
+      updateManualChirpPlot(divId);
+    });
+  }
 
   Plotly.newPlot($(`${divId}_chirpCompare`), [
     { z: beforeData.z, x: beforeData.tPlot, y: wl, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
@@ -1000,7 +1047,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     $(`${divId}_info`).innerHTML = `参考t0 = ${refT0.toFixed(1)} fs | 啁啾范围: ${Math.min(...validT0Fs).toFixed(1)} ~ ${Math.max(...validT0Fs).toFixed(1)} fs | 方法: ${methodName}`;
   }
 
-  window[`data_${baseName}`] = { timeArray: time, wavelengthArray: wl, TA2D: taAfter, coeffs, t0PerWl };
+  window[`data_${baseName}`] = { timeArray: time, wavelengthArray: wl, TA2D: taAfter, taBefore: taBefore, coeffs, t0PerWl };
 }
 
 function doSpectralSlice(baseName, divId) {
@@ -1228,6 +1275,192 @@ function downloadAllPlotsPNG(baseName, divId) {
   plots.forEach((p, i) => {
     setTimeout(() => downloadPlotPNG(divId, p, baseName), i * 300);
   });
+}
+
+// ============================================================
+// Manual Chirp Correction - Interactive Point Selection
+// ============================================================
+
+function updateManualChirpPlot(divId) {
+  const md = window._manualChirpData[divId];
+  if (!md) return;
+  const pts = md.points;
+  const fitOrder = parseInt($('manualFitOrder')?.value || 3);
+  const minPts = fitOrder + 1;
+
+  // Update point count display
+  const countEl = $(`${divId}_pointCount`);
+  if (countEl) countEl.textContent = `已选 ${pts.length} 个点（需 ≥ ${minPts}）`;
+
+  // Enable/disable apply button
+  const applyBtn = $(`${divId}_applyManual`);
+  if (applyBtn) applyBtn.disabled = pts.length < minPts;
+
+  // Update the manual points trace on Plotly
+  const chirpEl = $(`${divId}_chirpCurve`);
+  if (!chirpEl) return;
+
+  const xPts = pts.map(p => p.wl);
+  const yPts = pts.map(p => p.t0);
+  const labels = pts.map((p, i) => `#${i+1}: ${p.wl.toFixed(1)}nm, ${p.t0.toFixed(0)}fs`);
+
+  // Update trace index 2 (manual points trace)
+  Plotly.update(chirpEl, {
+    x: [xPts],
+    y: [yPts],
+    text: [labels]
+  }, {}, [2]);
+
+  // If enough points, also show the fit curve as trace 3
+  // We add trace 3 dynamically or update it
+  if (pts.length >= minPts) {
+    const xArr = pts.map(p => p.wl);
+    const yArr = pts.map(p => p.t0 / 1000); // convert back to ps for polyfit
+    const actualOrder = Math.min(fitOrder, pts.length - 1);
+    const coeffs = polyfit(xArr, yArr, actualOrder);
+    const wlFine = linspace(md.wl[0], md.wl[md.wl.length - 1], 200);
+    const t0Fit = polyval(coeffs, wlFine).map(v => v * 1000);
+
+    // Check if trace 3 exists (fit curve)
+    const existingTraces = chirpEl.data;
+    if (existingTraces.length > 3) {
+      Plotly.update(chirpEl, {
+        x: [wlFine],
+        y: [t0Fit]
+      }, {}, [3]);
+    } else {
+      Plotly.addTraces(chirpEl, {
+        x: wlFine, y: t0Fit, mode: 'lines',
+        name: `手动拟合 (${actualOrder}阶)`,
+        line: { color: '#0f0', width: 2 }
+      });
+    }
+  } else {
+    // Remove fit curve if not enough points
+    const existingTraces = chirpEl.data;
+    if (existingTraces.length > 3) {
+      Plotly.deleteTraces(chirpEl, [3]);
+    }
+  }
+}
+
+function undoLastManualPoint(divId) {
+  const md = window._manualChirpData?.[divId];
+  if (!md || md.points.length === 0) return;
+  md.points.pop();
+
+  // Also remove fit curve trace if it exists
+  const chirpEl = $(`${divId}_chirpCurve`);
+  if (chirpEl && chirpEl.data.length > 3) {
+    Plotly.deleteTraces(chirpEl, [3]);
+  }
+
+  updateManualChirpPlot(divId);
+}
+
+function clearManualPoints(divId) {
+  const md = window._manualChirpData?.[divId];
+  if (!md) return;
+  md.points = [];
+
+  // Remove fit curve trace if it exists
+  const chirpEl = $(`${divId}_chirpCurve`);
+  if (chirpEl && chirpEl.data.length > 3) {
+    Plotly.deleteTraces(chirpEl, [3]);
+  }
+
+  updateManualChirpPlot(divId);
+}
+
+function applyManualChirp(baseName, divId) {
+  const md = window._manualChirpData?.[divId];
+  if (!md || md.points.length < 3) return;
+
+  const pts = md.points;
+  const fitOrder = parseInt($('manualFitOrder')?.value || 3);
+  const actualOrder = Math.min(fitOrder, pts.length - 1);
+
+  // Fit polynomial to user-selected points
+  const xArr = pts.map(p => p.wl);
+  const yArr = pts.map(p => p.t0 / 1000); // fs -> ps
+  const coeffs = polyfit(xArr, yArr, actualOrder);
+
+  // Apply chirp correction using the fitted coefficients
+  const data = window[`data_${baseName}`];
+  if (!data) return;
+
+  const { TA2D: taAfter } = applyChirpShift(data.timeArray, data.wavelengthArray, data.taBefore, coeffs);
+
+  // Update stored data
+  data.TA2D = taAfter;
+  data.coeffs = coeffs;
+
+  const tViewMin = parseFloat($('tViewMin').value);
+  const tViewMax = parseFloat($('tViewMax').value);
+  const tRange = [tViewMin, tViewMax];
+
+  // Update 2D heatmap (after correction)
+  const afterHm = makeHeatmapData(data.timeArray, data.wavelengthArray, taAfter, tRange);
+  Plotly.react($(`${divId}_after2d`), [{
+    z: afterHm.z, x: afterHm.tPlot, y: data.wavelengthArray, type: 'heatmap',
+    colorscale: 'RdBu', reversescale: true, zmid: 0, colorbar: { title: 'mOD' }
+  }], { title: '校正后', xaxis: { title: '时间 (ps)' }, yaxis: { title: '波长 (nm)' }, margin: { l: 60, r: 20, t: 30, b: 50 } }, { responsive: true });
+
+  // Update chirp compare
+  const beforeHm = makeHeatmapData(data.timeArray, data.wavelengthArray, data.taBefore, tRange);
+  Plotly.react($(`${divId}_chirpCompare`), [
+    { z: beforeHm.z, x: beforeHm.tPlot, y: data.wavelengthArray, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
+    { z: afterHm.z, x: afterHm.tPlot, y: data.wavelengthArray, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
+  ], {
+    title: '校正前后对比',
+    grid: { columns: 2, rows: 1, pattern: 'independent', xgap: 0.08 },
+    margin: { l: 60, r: 20, t: 40, b: 50 },
+    xaxis: { title: '时间 (ps)', domain: [0, 0.46] }, yaxis: { title: '波长 (nm)' },
+    xaxis2: { title: '时间 (ps)', anchor: 'y2' }, yaxis2: { title: '波长 (nm)', anchor: 'x2' },
+    annotations: [
+      { text: '校正前', x: 0.22, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } },
+      { text: '校正后', x: 0.78, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } }
+    ]
+  }, { responsive: true });
+
+  // Update kinetic traces (after)
+  const probeWlStr = $('probeWl').value;
+  const probeWavelengths = probeWlStr.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+  const kinColors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'];
+  const kinTracesAfter = [];
+  for (let pi = 0; pi < probeWavelengths.length; pi++) {
+    const pw = probeWavelengths[pi];
+    let idxWl = 0, minDiff = Infinity;
+    for (let i = 0; i < data.wavelengthArray.length; i++) {
+      if (Math.abs(data.wavelengthArray[i] - pw) < minDiff) { minDiff = Math.abs(data.wavelengthArray[i] - pw); idxWl = i; }
+    }
+    const sig = taAfter[idxWl];
+    const sigPlot = [], tPlot = [];
+    for (let j = 0; j < data.timeArray.length; j++) {
+      if (data.timeArray[j] >= tViewMin && data.timeArray[j] <= tViewMax && !isNaN(sig[j])) { sigPlot.push(sig[j]); tPlot.push(data.timeArray[j]); }
+    }
+    kinTracesAfter.push({ x: tPlot, y: sigPlot, mode: 'lines', name: `${data.wavelengthArray[idxWl].toFixed(1)} nm`, line: { color: kinColors[pi % kinColors.length] } });
+  }
+  Plotly.react($(`${divId}_afterKin`), kinTracesAfter, {
+    xaxis: { title: '时间 (ps)' }, yaxis: { title: 'ΔA (mOD)' },
+    legend: { font: { size: 10 } }, margin: { l: 60, r: 20, t: 40, b: 50 }, title: '校正后'
+  }, { responsive: true });
+
+  // Update chirp curve fit style
+  const chirpEl = $(`${divId}_chirpCurve`);
+  if (chirpEl && chirpEl.data.length > 3) {
+    Plotly.restyle(chirpEl, { line: [{ color: '#0f0', width: 3 }], name: [`手动拟合 (${actualOrder}阶) ✓`] }, [3]);
+  }
+
+  // Update info
+  const t0Fitted = polyval(coeffs, data.wavelengthArray);
+  const t0Fs = t0Fitted.map(v => v * 1000);
+  const ref = t0Fs.reduce((a, b) => a + b, 0) / t0Fs.length;
+  $(`${divId}_info`).innerHTML = `参考t0 = ${ref.toFixed(1)} fs | 啁啾范围: ${Math.min(...t0Fs).toFixed(1)} ~ ${Math.max(...t0Fs).toFixed(1)} fs | 方法: 手动选点法 (${actualOrder}阶) | ✅ 已应用`;
+
+  // Visual feedback
+  const panel = $(`${divId}_manualPanel`);
+  if (panel) panel.style.borderColor = '#0f0';
 }
 
 function multiExpFunc(params, t, nExp) {
