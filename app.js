@@ -1,6 +1,177 @@
 let uploadedFiles = [];
+let ufsFiles = []; // indices of uploaded files that are UFS format
 
 function $(id) { return document.getElementById(id); }
+
+// ============================================================
+// UFS (Version2) Binary Parser
+// ============================================================
+
+function readUfsString(buffer, offset, length) {
+  const arr = new Uint8Array(buffer, offset, length);
+  let end = 0;
+  while (end < length && arr[end] >= 32 && arr[end] <= 126) end++;
+  return { value: String.fromCharCode.apply(null, arr.slice(0, end)), consumed: length };
+}
+
+function readUfsBeUint32(buffer, offset) {
+  const view = new DataView(buffer);
+  return view.getUint32(offset, false);
+}
+
+function readUfsBeUint16(buffer, offset) {
+  const view = new DataView(buffer);
+  return view.getUint16(offset, false);
+}
+
+function readUfsBeFloat64(buffer, offset) {
+  const view = new DataView(buffer);
+  return view.getFloat64(offset, false);
+}
+
+function parseUfsSectionHeader(buffer, offset) {
+  // [4B name_len][name][2B pad][2B dtype][2B unit][4B count]
+  const nameLen = readUfsBeUint32(buffer, offset);
+  offset += 4;
+  const nameResult = readUfsString(buffer, offset, nameLen);
+  const name = nameResult.value;
+  offset += nameLen;
+
+  const pad1 = readUfsBeUint16(buffer, offset); // skip
+  const dtype = readUfsBeUint16(buffer, offset + 2);
+  offset += 4;
+
+  const unit = String.fromCharCode(
+    new Uint8Array(buffer, offset, 1)[0],
+    new Uint8Array(buffer, offset + 1, 1)[0]
+  ).replace(/\x00/g, '');
+  offset += 2;
+
+  const count = readUfsBeUint32(buffer, offset);
+  offset += 4;
+
+  return { name, dtype, unit, count, dataOffset: offset, headerStart: offset - nameLen - 12 };
+}
+
+function parseUfsIntensityHeader(buffer, offset) {
+  // [4B name_len][name][2B pad][2B dtype][2B unit][2B wl_count][2B pad][2B t_count]
+  const nameLen = readUfsBeUint32(buffer, offset);
+  offset += 4;
+  const nameResult = readUfsString(buffer, offset, nameLen);
+  const name = nameResult.value;
+  offset += nameLen;
+
+  const pad1 = readUfsBeUint16(buffer, offset);
+  const dtype = readUfsBeUint16(buffer, offset + 2);
+  const unit = String.fromCharCode(
+    new Uint8Array(buffer, offset + 4, 1)[0],
+    new Uint8Array(buffer, offset + 5, 1)[0]
+  ).replace(/\x00/g, '');
+  offset += 6;
+
+  const wlCount = readUfsBeUint16(buffer, offset);
+  offset += 2;
+  const pad2 = readUfsBeUint16(buffer, offset);
+  offset += 2;
+  const tCount = readUfsBeUint16(buffer, offset);
+  offset += 2;
+
+  return { name, dtype, unit, wlCount, tCount, dataOffset: offset };
+}
+
+function parseUfsFile(arrayBuffer) {
+  const data = arrayBuffer;
+  let offset = 0;
+
+  // Global header: [4B len]["Version2"]
+  const verLen = readUfsBeUint32(data, offset);
+  offset += 4;
+  const verResult = readUfsString(data, offset, verLen);
+  const version = verResult.value;
+  offset += verLen;
+
+  // Wavelength section
+  const wlSection = parseUfsSectionHeader(data, offset);
+  const wavelengths = [];
+  for (let i = 0; i < wlSection.count; i++) {
+    wavelengths.push(readUfsBeFloat64(data, wlSection.dataOffset + i * 8));
+  }
+  offset = wlSection.dataOffset + wlSection.count * 8;
+
+  // Time section
+  const tSection = parseUfsSectionHeader(data, offset);
+  const times = [];
+  for (let i = 0; i < tSection.count; i++) {
+    times.push(readUfsBeFloat64(data, tSection.dataOffset + i * 8));
+  }
+  offset = tSection.dataOffset + tSection.count * 8;
+
+  // Intensity section
+  const intSection = parseUfsIntensityHeader(data, offset);
+  const wlCount = intSection.wlCount;
+  const tCount = intSection.tCount;
+  const intStart = intSection.dataOffset;
+
+  const intensity = [];
+  for (let wi = 0; wi < wlCount; wi++) {
+    const row = [];
+    for (let ti = 0; ti < tCount; ti++) {
+      const flat = wi * tCount + ti;
+      const off = intStart + flat * 8;
+      let val = readUfsBeFloat64(data, off);
+      if (isNaN(val) || !isFinite(val) || Math.abs(val) < 1e-300) {
+        val = NaN;
+      }
+      row.push(val);
+    }
+    intensity.push(row);
+  }
+
+  // Extract text metadata from file tail
+  const fileLen = data.byteLength;
+  let textStart = fileLen;
+  const uint8 = new Uint8Array(data);
+  for (let i = fileLen - 1; i >= Math.max(0, fileLen - 10000); i--) {
+    if (uint8[i] >= 32 && uint8[i] <= 126) {
+      let j = i;
+      while (j > 0 && ((uint8[j-1] >= 32 && uint8[j-1] <= 126) || [9,10,13].includes(uint8[j-1]))) j--;
+      textStart = j;
+      break;
+    }
+  }
+
+  const metadata = {};
+  if (textStart < fileLen) {
+    const textBytes = uint8.slice(textStart);
+    let text = '';
+    for (let i = 0; i < textBytes.length; i++) {
+      if (textBytes[i] === 0) break;
+      if (textBytes[i] >= 32 && textBytes[i] <= 126) text += String.fromCharCode(textBytes[i]);
+      else if ([9,10,13].includes(textBytes[i])) text += ' ';
+    }
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    for (const line of text.split('\n')) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.slice(0, colonIdx).trim();
+        const value = line.slice(colonIdx + 1).trim();
+        if (key) metadata[key] = value;
+      }
+    }
+  }
+
+  // Add units from section headers
+  if (tSection.unit) metadata['Time units'] = tSection.unit;
+  if (intSection.name && intSection.name !== 'DA') {
+    metadata['Z axis title'] = intSection.name;
+  } else if (intSection.name === 'DA') {
+    metadata['Z axis title'] = 'dA';
+  }
+
+  return { wavelengths, times, intensity, metadata, version };
+}
+
+
 
 function enterApp() {
   $('coverPage').classList.add('hidden');
@@ -21,11 +192,32 @@ $('uploadZone').addEventListener('drop', e => {
 });
 $('fileInput').addEventListener('change', e => handleFiles(e.target.files));
 
-function handleFiles(files) {
-  for (let f of files) {
-    if (!uploadedFiles.find(u => u.name === f.name)) {
-      uploadedFiles.push(f);
-    }
+async function handleFiles(files) {
+  for (const f of files) {
+    if (uploadedFiles.find(u => u.name === f.name)) continue;
+
+    // Detect UFS by reading the header
+    const isUfs = await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const magic = new Uint8Array(e.target.result, 0, 8);
+        const view = new DataView(e.target.result);
+        const verLen = view.getUint32(4, false);
+        if (verLen < 1 || verLen > 100) { resolve(false); return; }
+        let str = '';
+        for (let i = 0; i < verLen && i < 20; i++) {
+          if (magic[8 + i] < 32 || magic[8 + i] > 126) { str = ''; break; }
+          str += String.fromCharCode(magic[8 + i]);
+        }
+        resolve(str === 'Version2');
+      };
+      reader.onerror = () => resolve(false);
+      const slice = f.slice(0, 64);
+      reader.readAsArrayBuffer(slice);
+    });
+
+    uploadedFiles.push(f);
+    if (isUfs) ufsFiles.push(f.name);
   }
   renderFileList();
   $('processBtn').disabled = uploadedFiles.length === 0;
@@ -41,7 +233,9 @@ function renderFileList() {
 }
 
 function removeFile(idx) {
+  const name = uploadedFiles[idx].name;
   uploadedFiles.splice(idx, 1);
+  ufsFiles = ufsFiles.filter(n => n !== name);
   renderFileList();
   $('processBtn').disabled = uploadedFiles.length === 0;
 }
@@ -399,17 +593,42 @@ async function processAll() {
     await yieldThread();
     if (cancelProcessing) break;
 
-    const text = await new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onload = e => resolve(e.target.result);
-      reader.readAsText(file, 'latin-1');
-    });
+    let timeArray, wavelengthArray, TA2D;
+    const isUfs = ufsFiles.includes(file.name);
 
-    setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${file.name}...`, 'info', base + step * 1);
-    await yieldThread();
-    if (cancelProcessing) break;
+    if (isUfs) {
+      // Read full UFS file and parse directly into processing pipeline
+      const arrayBuffer = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+      });
 
-    const { timeArray, wavelengthArray, TA2D } = parseCSV(text);
+      setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 UFS ${file.name}...`, 'info', base + step * 1);
+      await yieldThread();
+      if (cancelProcessing) break;
+
+      const ufsData = parseUfsFile(arrayBuffer);
+      timeArray = ufsData.times;
+      wavelengthArray = ufsData.wavelengths;
+      TA2D = ufsData.intensity;
+    } else {
+      const text = await new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.readAsText(file, 'latin-1');
+      });
+
+      setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${file.name}...`, 'info', base + step * 1);
+      await yieldThread();
+      if (cancelProcessing) break;
+
+      const parsed = parseCSV(text);
+      timeArray = parsed.timeArray;
+      wavelengthArray = parsed.wavelengthArray;
+      TA2D = parsed.TA2D;
+    }
     const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
     const taBaseline = baselineSubtraction(timeArray, taCropped, nBaseline);
     const taBeforeChirp = taBaseline.map(r => [...r]);

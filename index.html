@@ -168,14 +168,9 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
 
     <div class="cover-notes">
       <ul>
-        <li>CSV 格式：第1行为时间(ps)，后续每行为「波长(nm), ΔA1, ΔA2, ...」</li>
-        <li>文件末尾非数值文本自动忽略，无需手动删除</li>
-        <li>所有计算在浏览器本地完成，数据不会上传至任何服务器</li>
-        <li>全局优化法计算量较大，大文件可能需要数秒</li>
-        <li>动力学拟合建议从 2 指数开始尝试，观察 R² 再决定是否增加</li>
-        <li>对数时间轴适合跨越多个数量级的衰减动力学</li>
-        <li>光谱切片默认时间：0.1, 1, 10, 100, 1000 ps 及数据最大时间</li>
-        <li>所有 CSV 导出均带 BOM，双击即可在 Excel 中打开不乱码</li>
+        <li>CSV / UFS 格式支持，末尾元数据自动忽略 &nbsp;|&nbsp; 浏览器本地运算，数据不上传</li>
+        <li>全局优化法计算量较大，大文件约需数秒 &nbsp;|&nbsp; 动力学拟合建议从 2 指数起步</li>
+        <li>光谱切片默认时间：0.1, 1, 10, 100, 1000 ps 及数据最大时间 &nbsp;|&nbsp; CSV 导出带 BOM，Excel 双击不乱码</li>
       </ul>
     </div>
 
@@ -238,9 +233,9 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
     <h2>📁 上传数据</h2>
     <div class="upload-zone" id="uploadZone">
       <div style="font-size: 40px;">📂</div>
-      <p>点击或拖拽CSV文件到此处（支持多文件）</p>
-      <p style="font-size: 12px; color: #666;">第1行为时间(ps)，后续行为波长(nm)+ΔA，末尾文本自动忽略</p>
-      <input type="file" id="fileInput" accept=".csv" multiple style="display:none">
+      <p>点击或拖拽 CSV / UFS 文件到此处（支持多文件）</p>
+      <p style="font-size: 12px; color: #666;">CSV: 第1行为时间(ps)，后续行为波长(nm)+ΔA，末尾文本自动忽略</p>
+      <input type="file" id="fileInput" accept=".csv,.ufs" multiple style="display:none">
     </div>
     <div class="file-list" id="fileList"></div>
     <div style="margin-top: 16px; text-align: center; display: flex; gap: 12px; justify-content: center;">
