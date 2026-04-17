@@ -201,25 +201,25 @@ async function handleFiles(files) {
   for (const f of files) {
     if (uploadedFiles.find(u => u.name === f.name)) continue;
 
-    // Detect UFS by reading the header
-    const isUfs = await new Promise(resolve => {
+    // Primary: file extension check; Fallback: magic bytes
+    const extMatch = f.name.toLowerCase().endsWith('.ufs');
+    const isUfs = extMatch || await new Promise(resolve => {
       const reader = new FileReader();
       reader.onload = e => {
         try {
-          const view = new DataView(e.target.result);
-          const verLen = view.getUint32(0, false);
-          if (verLen < 1 || verLen > 100) { resolve(false); return; }
-          const raw = new Uint8Array(e.target.result, 4, Math.min(verLen, 20));
+          const bytes = new Uint8Array(e.target.result);
+          const len = (bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]) >>> 0;
+          if (len < 1 || len > 100 || 4 + len > bytes.length) { resolve(false); return; }
           let str = '';
-          for (let i = 0; i < raw.length; i++) {
-            if (raw[i] < 32 || raw[i] > 126) { resolve(false); return; }
-            str += String.fromCharCode(raw[i]);
+          for (let i = 4; i < 4 + len; i++) {
+            if (bytes[i] < 32 || bytes[i] > 126) { resolve(false); return; }
+            str += String.fromCharCode(bytes[i]);
           }
           resolve(str === 'Version2');
         } catch { resolve(false); }
       };
       reader.onerror = () => resolve(false);
-      reader.readAsArrayBuffer(f.slice(0, 64));
+      reader.readAsArrayBuffer(f.slice(0, 128));
     });
 
     uploadedFiles.push(f);
