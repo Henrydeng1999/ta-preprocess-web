@@ -876,11 +876,22 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       </div>
       <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">拟合结果下载</h3>
       <div class="download-section">
-        <button class="btn btn-download" onclick="downloadFitCSV('${baseName}')">⬇️ 拟合结果 (Excel CSV)</button>
+        <button class="btn btn-download" onclick="downloadFitCSV('${baseName}')">⬇️ 拟合参数 (Excel CSV)</button>
+        <button class="btn btn-download" onclick="downloadFitRawCSV('${baseName}')">⬇️ 拟合原始+拟合数据 (Excel CSV)</button>
       </div>
       <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">光谱切片下载</h3>
       <div class="download-section">
         <button class="btn btn-download" onclick="downloadSliceCSV('${baseName}')">⬇️ 光谱切片 (Excel CSV)</button>
+      </div>
+      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">图片导出 (PNG)</h3>
+      <div class="download-section">
+        <button class="btn btn-download" onclick="downloadAllPlotsPNG('${baseName}','${divId}')">⬇️ 全部图片</button>
+        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','heatmap','${baseName}')">🖼️ 2D 伪彩图</button>
+        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','chirpCurve','${baseName}')">🖼️ 啁啾曲线</button>
+        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','beforeKin','${baseName}')">🖼️ 校正前动力学</button>
+        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','afterKin','${baseName}')">🖼️ 校正后动力学</button>
+        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','fitPlot','${baseName}')">🖼️ 动力学拟合</button>
+        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','slicePlot','${baseName}')">🖼️ 光谱切片</button>
       </div>
       <div style="margin-top:12px;font-size:13px;color:#888;" id="${divId}_info"></div>
     </div>
@@ -1176,6 +1187,53 @@ function downloadFitCSV(baseName) {
   triggerDownload(bom + csv, `${baseName}_fit_results.csv`, 'text/csv;charset=utf-8');
 }
 
+function downloadFitRawCSV(baseName) {
+  const results = window[`fitResults_${baseName}`];
+  if (!results || results.length === 0) return;
+
+  const bom = '\uFEFF';
+  let csv = bom;
+
+  for (const r of results) {
+    if (!r.tData || r.tData.length === 0) continue;
+    const wl = r.wavelength.toFixed(2);
+    const nData = r.tData.length;
+    const nFit = r.tFit ? r.tFit.length : 0;
+    const maxLen = Math.max(nData, nFit);
+
+    csv += `# ${wl} nm  R²=${r.r2.toFixed(6)}  nExp=${r.nExp}\n`;
+    csv += `时间(ps),原始ΔA(mOD),拟合ΔA(mOD)\n`;
+    for (let k = 0; k < maxLen; k++) {
+      const t = k < nData ? r.tData[k] : '';
+      const yd = k < nData ? (isNaN(r.yData[k]) ? '' : r.yData[k].toExponential(6)) : '';
+      const yf = k < nFit ? (isNaN(r.yFit[k]) ? '' : r.yFit[k].toExponential(6)) : '';
+      csv += `${t},${yd},${yf}\n`;
+    }
+    csv += '\n';
+  }
+
+  triggerDownload(csv, `${baseName}_fit_raw_data.csv`, 'text/csv;charset=utf-8');
+}
+
+function downloadPlotPNG(divId, plotSuffix, baseName) {
+  const el = document.getElementById(`${divId}_${plotSuffix}`);
+  if (!el) return;
+  Plotly.downloadImage(el, {
+    format: 'png',
+    width: 1200,
+    height: 600,
+    filename: `${baseName}_${plotSuffix}`,
+    scale: 2
+  });
+}
+
+function downloadAllPlotsPNG(baseName, divId) {
+  const plots = ['heatmap', 'chirpCurve', 'beforeKin', 'afterKin', 'fitPlot', 'slicePlot'];
+  plots.forEach((p, i) => {
+    setTimeout(() => downloadPlotPNG(divId, p, baseName), i * 300);
+  });
+}
+
 function multiExpFunc(params, t, nExp) {
   let y = params[params.length - 1];
   for (let k = 0; k < nExp; k++) {
@@ -1422,7 +1480,7 @@ async function doKineticFit(baseName, divId) {
         <div style="margin-top:2px;font-size:11px;color:#555;font-family:monospace;">${formula}</div>
       </div>`;
 
-    fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2 });
+    fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2, tData: tPlot, yData: sigPlot, tFit: tFine, yFit: yFine });
   }
 
   Plotly.newPlot($(`${divId}_fitPlot`), traces, {
