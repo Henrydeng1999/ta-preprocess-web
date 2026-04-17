@@ -804,17 +804,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       <div class="tab" onclick="switchTab(this, '${divId}', 'tabDownload')">下载数据</div>
     </div>
     <div class="tab-content active" id="${divId}_tabViz">
-      <h3 style="font-size:14px;color:#ff6666;margin-bottom:8px;">2D 伪彩图</h3>
-      <div class="plot-grid">
-        <div class="plot-box"><h3>校正前</h3><div id="${divId}_before2d" style="width:100%;height:350px;"></div></div>
-        <div class="plot-box"><h3>校正后</h3><div id="${divId}_after2d" style="width:100%;height:350px;"></div></div>
-      </div>
-      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">动力学曲线</h3>
-      <div class="plot-grid">
-        <div class="plot-box"><h3>校正前</h3><div id="${divId}_beforeKin" style="width:100%;height:350px;"></div></div>
-        <div class="plot-box"><h3>校正后</h3><div id="${divId}_afterKin" style="width:100%;height:350px;"></div></div>
-      </div>
-      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">啁啾校正</h3>
+      <h3 style="font-size:14px;color:#ff6666;margin-bottom:8px;">啁啾校正</h3>
       ${chirpMethod === 'manual' ? `
       <div id="${divId}_manualPanel" style="background:#1a2a1a;border:1px solid #3a5a3a;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
         <p style="font-size:13px;color:#8f8;margin-bottom:8px;">🖱️ 点击啁啾曲线图添加控制点（至少选 ${parseInt($('manualFitOrder')?.value || 3) + 1} 个），然后点击「应用拟合」</p>
@@ -828,6 +818,11 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       <div class="plot-grid">
         <div class="plot-box"><h3>啁啾曲线${chirpMethod === 'manual' ? '（点击添加控制点）' : ''}</h3><div id="${divId}_chirpCurve" style="width:100%;height:350px;"></div></div>
         <div class="plot-box"><h3>校正前后对比</h3><div id="${divId}_chirpCompare" style="width:100%;height:350px;"></div></div>
+      </div>
+      <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">动力学曲线</h3>
+      <div class="plot-grid">
+        <div class="plot-box"><h3>校正前</h3><div id="${divId}_beforeKin" style="width:100%;height:350px;"></div></div>
+        <div class="plot-box"><h3>校正后</h3><div id="${divId}_afterKin" style="width:100%;height:350px;"></div></div>
       </div>
     </div>
     <div class="tab-content" id="${divId}_tabSlice">
@@ -906,7 +901,6 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
       <h3 style="font-size:14px;color:#ff6666;margin:16px 0 8px;">图片导出 (PNG)</h3>
       <div class="download-section">
         <button class="btn btn-download" onclick="downloadAllPlotsPNG('${baseName}','${divId}')">⬇️ 全部图片</button>
-        <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','heatmap','${baseName}')">🖼️ 2D 伪彩图</button>
         <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','chirpCurve','${baseName}')">🖼️ 啁啾曲线</button>
         <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','beforeKin','${baseName}')">🖼️ 校正前动力学</button>
         <button class="btn btn-download" onclick="downloadPlotPNG('${divId}','afterKin','${baseName}')">🖼️ 校正后动力学</button>
@@ -923,25 +917,6 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
 
   const beforeData = makeHeatmapData(time, wl, taBefore, tRange);
   const afterData = makeHeatmapData(time, wl, taAfter, tRange);
-
-  const heatmapLayout = {
-    xaxis: { title: '时间 (ps)' },
-    yaxis: { title: '波长 (nm)' },
-    margin: { l: 60, r: 20, t: 30, b: 50 },
-    colorscale: 'RdBu',
-  };
-
-  Plotly.newPlot($(`${divId}_before2d`), [{
-    z: beforeData.z, x: beforeData.tPlot, y: wl, type: 'heatmap',
-    colorscale: 'RdBu', reversescale: true, zmid: 0,
-    colorbar: { title: 'mOD' }
-  }], { ...heatmapLayout, title: '校正前' }, { responsive: true });
-
-  Plotly.newPlot($(`${divId}_after2d`), [{
-    z: afterData.z, x: afterData.tPlot, y: wl, type: 'heatmap',
-    colorscale: 'RdBu', reversescale: true, zmid: 0,
-    colorbar: { title: 'mOD' }
-  }], { ...heatmapLayout, title: '校正后' }, { responsive: true });
 
   const tMaskIdx = [];
   const tPlot = [];
@@ -998,7 +973,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
 
   // Manual mode: add trace for user-selected points + click handler
   if (chirpMethod === 'manual') {
-    chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: '#ff0', symbol: 'star' }, text: [], textposition: 'top center', textfont: { size: 9, color: '#ff0' } });
+    chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: 'black', symbol: 'x' }, text: [], textposition: 'top center', textfont: { size: 9, color: 'black' } });
   }
 
   Plotly.newPlot($(`${divId}_chirpCurve`), chirpTraces, {
@@ -1271,7 +1246,7 @@ function downloadPlotPNG(divId, plotSuffix, baseName) {
 }
 
 function downloadAllPlotsPNG(baseName, divId) {
-  const plots = ['heatmap', 'chirpCurve', 'beforeKin', 'afterKin', 'fitPlot', 'slicePlot'];
+  const plots = ['chirpCurve', 'beforeKin', 'afterKin', 'fitPlot', 'slicePlot'];
   plots.forEach((p, i) => {
     setTimeout(() => downloadPlotPNG(divId, p, baseName), i * 300);
   });
@@ -1332,7 +1307,7 @@ function updateManualChirpPlot(divId) {
       Plotly.addTraces(chirpEl, {
         x: wlFine, y: t0Fit, mode: 'lines',
         name: `手动拟合 (${actualOrder}阶)`,
-        line: { color: '#0f0', width: 2 }
+        line: { color: '#00cc00', width: 2 }
       });
     }
   } else {
@@ -1399,13 +1374,6 @@ function applyManualChirp(baseName, divId) {
   const tViewMax = parseFloat($('tViewMax').value);
   const tRange = [tViewMin, tViewMax];
 
-  // Update 2D heatmap (after correction)
-  const afterHm = makeHeatmapData(data.timeArray, data.wavelengthArray, taAfter, tRange);
-  Plotly.react($(`${divId}_after2d`), [{
-    z: afterHm.z, x: afterHm.tPlot, y: data.wavelengthArray, type: 'heatmap',
-    colorscale: 'RdBu', reversescale: true, zmid: 0, colorbar: { title: 'mOD' }
-  }], { title: '校正后', xaxis: { title: '时间 (ps)' }, yaxis: { title: '波长 (nm)' }, margin: { l: 60, r: 20, t: 30, b: 50 } }, { responsive: true });
-
   // Update chirp compare
   const beforeHm = makeHeatmapData(data.timeArray, data.wavelengthArray, data.taBefore, tRange);
   Plotly.react($(`${divId}_chirpCompare`), [
@@ -1449,7 +1417,7 @@ function applyManualChirp(baseName, divId) {
   // Update chirp curve fit style
   const chirpEl = $(`${divId}_chirpCurve`);
   if (chirpEl && chirpEl.data.length > 3) {
-    Plotly.restyle(chirpEl, { line: [{ color: '#0f0', width: 3 }], name: [`手动拟合 (${actualOrder}阶) ✓`] }, [3]);
+    Plotly.restyle(chirpEl, { line: [{ color: '#00cc00', width: 3 }], name: [`手动拟合 (${actualOrder}阶) ✓`] }, [3]);
   }
 
   // Update info
