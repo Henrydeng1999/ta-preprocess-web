@@ -205,20 +205,21 @@ async function handleFiles(files) {
     const isUfs = await new Promise(resolve => {
       const reader = new FileReader();
       reader.onload = e => {
-        const magic = new Uint8Array(e.target.result, 0, 8);
-        const view = new DataView(e.target.result);
-        const verLen = view.getUint32(4, false);
-        if (verLen < 1 || verLen > 100) { resolve(false); return; }
-        let str = '';
-        for (let i = 0; i < verLen && i < 20; i++) {
-          if (magic[8 + i] < 32 || magic[8 + i] > 126) { str = ''; break; }
-          str += String.fromCharCode(magic[8 + i]);
-        }
-        resolve(str === 'Version2');
+        try {
+          const view = new DataView(e.target.result);
+          const verLen = view.getUint32(0, false);
+          if (verLen < 1 || verLen > 100) { resolve(false); return; }
+          const raw = new Uint8Array(e.target.result, 4, Math.min(verLen, 20));
+          let str = '';
+          for (let i = 0; i < raw.length; i++) {
+            if (raw[i] < 32 || raw[i] > 126) { resolve(false); return; }
+            str += String.fromCharCode(raw[i]);
+          }
+          resolve(str === 'Version2');
+        } catch { resolve(false); }
       };
       reader.onerror = () => resolve(false);
-      const slice = f.slice(0, 64);
-      reader.readAsArrayBuffer(slice);
+      reader.readAsArrayBuffer(f.slice(0, 64));
     });
 
     uploadedFiles.push(f);
