@@ -433,10 +433,9 @@ function applyChirpShift(time, wl, ta, coeffs) {
   return { TA2D: corrected, t0Fitted, refT0 };
 }
 
-async function nelderMead(costFunc, x0, maxIter = 1500) {
+async function nelderMead(costFunc, x0, maxIter = 3000) {
   const n = x0.length;
   const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
-  const tol = 1e-10;
   let simplex = [x0.slice()];
   const f0 = costFunc(x0);
   const fVals = [f0];
@@ -450,26 +449,19 @@ async function nelderMead(costFunc, x0, maxIter = 1500) {
   let lastYield = 0;
   while (iter < maxIter) {
     if (cancelProcessing) break;
-    // Yield to UI every 20 iterations (was every 50)
     if (++lastYield >= 20) { lastYield = 0; await new Promise(r => setTimeout(r, 0)); }
 
-    // Sort simplex vertices by function value
     const order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
     const best = order[0], worst = order[n], secondWorst = order[n - 1];
     const xBest = simplex[best];
-    const fBest = fVals[best], fWorst = fVals[worst], fSecond = fVals[secondWorst];
+    const fBest = fVals[best], fSecond = fVals[secondWorst], fWorst = fVals[worst];
 
-    // Convergence: simplex diameter small enough
-    if (iter > 0 && (fWorst - fBest) < tol) break;
-
-    // Centroid of all vertices except worst
     const centroid = new Array(n).fill(0);
     for (let i = 0; i < n + 1; i++) {
       if (i === worst) continue;
       for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
     }
 
-    // Reflection
     const xRef = centroid.map((c, j) => c + alpha * (c - simplex[worst][j]));
     const fRef = costFunc(xRef);
     let shrink = false;
@@ -477,13 +469,11 @@ async function nelderMead(costFunc, x0, maxIter = 1500) {
     if (fRef < fSecond && fRef >= fBest) {
       simplex[worst] = xRef; fVals[worst] = fRef;
     } else if (fRef < fBest) {
-      // Expansion
       const xExp = centroid.map((c, j) => c + gamma * (xRef[j] - c));
       const fExp = costFunc(xExp);
       if (fExp < fRef) { simplex[worst] = xExp; fVals[worst] = fExp; }
       else { simplex[worst] = xRef; fVals[worst] = fRef; }
     } else {
-      // Contraction
       const xCon = centroid.map((c, j) => c + rho * (simplex[worst][j] - c));
       const fCon = costFunc(xCon);
       if (fCon < fWorst) { simplex[worst] = xCon; fVals[worst] = fCon; }
@@ -495,6 +485,11 @@ async function nelderMead(costFunc, x0, maxIter = 1500) {
         fVals[i] = costFunc(simplex[i]);
       }
     }
+
+    // Convergence check AFTER all operations (including shrink)
+    const fMax = Math.max(...fVals), fMin = Math.min(...fVals);
+    if (Math.abs(fMax - fMin) < 1e-12) break;
+
     iter++;
   }
   let bestIdx = 0;
@@ -622,7 +617,7 @@ async function chirpCorrectionGlobal(time, wl, ta) {
     return -totalSharpness / nValidWl + reg;
   }
 
-  const result = await nelderMead(costFunc, initialCoeffs, 1500);
+  const result = await nelderMead(costFunc, initialCoeffs, 3000);
   const optimalCoeffs = result.x;
   const { TA2D } = applyChirpShift(time, wl, ta, optimalCoeffs);
   return { TA2D, coeffs: optimalCoeffs, t0PerWl };
