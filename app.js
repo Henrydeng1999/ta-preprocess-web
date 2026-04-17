@@ -11,7 +11,9 @@ function readUfsString(buffer, offset, length) {
   const arr = new Uint8Array(buffer, offset, length);
   let end = 0;
   while (end < length && arr[end] >= 32 && arr[end] <= 126) end++;
-  return { value: String.fromCharCode.apply(null, arr.slice(0, end)), consumed: length };
+  let result = '';
+  for (let k = 0; k < end; k++) result += String.fromCharCode(arr[k]);
+  return { value: result, consumed: length };
 }
 
 function readUfsBeUint32(buffer, offset) {
@@ -178,6 +180,9 @@ function enterApp() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+  if (location.protocol === 'file:') {
+    alert('⚠️ 请通过 HTTP 服务器打开本页面（file:// 协议下文件读取受限）。\n\n推荐：\n  npx serve .\n  或 python -m http.server 8080\n  或 VS Code Live Server 插件');
+  }
   const enterBtn = document.getElementById('enterBtn');
   if (enterBtn) enterBtn.addEventListener('click', enterApp);
 });
@@ -598,18 +603,41 @@ async function processAll() {
 
     if (isUfs) {
       // Read full UFS file and parse directly into processing pipeline
-      const arrayBuffer = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = reject;
-        reader.readAsArrayBuffer(file);
-      });
+      let arrayBuffer;
+      try {
+        arrayBuffer = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = e => resolve(e.target.result);
+          reader.onerror = () => reject(new Error('文件读取失败，请确认以 HTTP 方式打开页面（非 file://）'));
+          reader.readAsArrayBuffer(file);
+        });
+      } catch (err) {
+        setStatus(`❌ ${err.message}`, 'error');
+        $('processBtn').disabled = false;
+        $('cancelBtn').style.display = 'none';
+        return;
+      }
+
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        setStatus('❌ 文件内容为空或读取失败', 'error');
+        $('processBtn').disabled = false;
+        $('cancelBtn').style.display = 'none';
+        return;
+      }
 
       setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 UFS ${file.name}...`, 'info', base + step * 1);
       await yieldThread();
       if (cancelProcessing) break;
 
-      const ufsData = parseUfsFile(arrayBuffer);
+      let ufsData;
+      try {
+        ufsData = parseUfsFile(arrayBuffer);
+      } catch (err) {
+        setStatus(`❌ UFS 解析失败: ${err.message}`, 'error');
+        $('processBtn').disabled = false;
+        $('cancelBtn').style.display = 'none';
+        return;
+      }
       timeArray = ufsData.times;
       wavelengthArray = ufsData.wavelengths;
       TA2D = ufsData.intensity;
