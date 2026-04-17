@@ -456,6 +456,7 @@ async function nelderMead(costFunc, x0, maxIter = 1500) {
     // Sort simplex vertices by function value
     const order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
     const best = order[0], worst = order[n], secondWorst = order[n - 1];
+    const xBest = simplex[best];
     const fBest = fVals[best], fWorst = fVals[worst], fSecond = fVals[secondWorst];
 
     // Convergence: simplex diameter small enough
