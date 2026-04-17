@@ -433,9 +433,10 @@ function applyChirpShift(time, wl, ta, coeffs) {
   return { TA2D: corrected, t0Fitted, refT0 };
 }
 
-async function nelderMead(costFunc, x0, maxIter = 3000) {
+async function nelderMead(costFunc, x0, maxIter = 1500) {
   const n = x0.length;
   const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
+  const tol = 1e-10;
   let simplex = [x0.slice()];
   const f0 = costFunc(x0);
   const fVals = [f0];
@@ -446,31 +447,45 @@ async function nelderMead(costFunc, x0, maxIter = 3000) {
     fVals.push(costFunc(xi));
   }
   let iter = 0;
+  let lastYield = 0;
   while (iter < maxIter) {
     if (cancelProcessing) break;
-    if (iter % 50 === 0) await new Promise(r => setTimeout(r, 0));
-    let order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
+    // Yield to UI every 20 iterations (was every 50)
+    if (++lastYield >= 20) { lastYield = 0; await new Promise(r => setTimeout(r, 0)); }
+
+    // Sort simplex vertices by function value
+    const order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
     const best = order[0], worst = order[n], secondWorst = order[n - 1];
-    const xBest = simplex[best], fBest = fVals[best];
+    const fBest = fVals[best], fWorst = fVals[worst], fSecond = fVals[secondWorst];
+
+    // Convergence: simplex diameter small enough
+    if (iter > 0 && (fWorst - fBest) < tol) break;
+
+    // Centroid of all vertices except worst
     const centroid = new Array(n).fill(0);
     for (let i = 0; i < n + 1; i++) {
       if (i === worst) continue;
       for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
     }
+
+    // Reflection
     const xRef = centroid.map((c, j) => c + alpha * (c - simplex[worst][j]));
     const fRef = costFunc(xRef);
     let shrink = false;
-    if (fRef < fVals[secondWorst] && fRef >= fBest) {
+
+    if (fRef < fSecond && fRef >= fBest) {
       simplex[worst] = xRef; fVals[worst] = fRef;
     } else if (fRef < fBest) {
+      // Expansion
       const xExp = centroid.map((c, j) => c + gamma * (xRef[j] - c));
       const fExp = costFunc(xExp);
       if (fExp < fRef) { simplex[worst] = xExp; fVals[worst] = fExp; }
       else { simplex[worst] = xRef; fVals[worst] = fRef; }
     } else {
+      // Contraction
       const xCon = centroid.map((c, j) => c + rho * (simplex[worst][j] - c));
       const fCon = costFunc(xCon);
-      if (fCon < fVals[worst]) { simplex[worst] = xCon; fVals[worst] = fCon; }
+      if (fCon < fWorst) { simplex[worst] = xCon; fVals[worst] = fCon; }
       else { shrink = true; }
     }
     if (shrink) {
@@ -479,8 +494,6 @@ async function nelderMead(costFunc, x0, maxIter = 3000) {
         fVals[i] = costFunc(simplex[i]);
       }
     }
-    const fMax = Math.max(...fVals), fMin = Math.min(...fVals);
-    if (Math.abs(fMax - fMin) < 1e-12) break;
     iter++;
   }
   let bestIdx = 0;
@@ -510,48 +523,105 @@ async function chirpCorrectionGlobal(time, wl, ta) {
   const initialCoeffs = polyfit(validX, validY, 2);
 
   const nWl = wl.length;
-  const validRows = ta.map(row => row.map(v => !isNaN(v)));
-  const tEvalIdx = [];
-  const tEval = [];
-  for (let j = 0; j < time.length; j++) {
-    if (time[j] >= -0.5 && time[j] <= 0.5) { tEvalIdx.push(j); tEval.push(time[j]); }
+  const nTime = time.length;
+
+  // Pre-compute valid (non-NaN) data per wavelength — done once, reused in every costFunc call
+  const precompValid = new Array(nWl);
+  for (let i = 0; i < nWl; i++) {
+    const row = ta[i];
+    const vxArr = [], vyArr = [];
+    for (let j = 0; j < nTime; j++) {
+      if (!isNaN(row[j])) { vxArr.push(time[j]); vyArr.push(row[j]); }
+    }
+    if (vxArr.length >= 5) {
+      precompValid[i] = { vx: vxArr, vy: vyArr, len: vxArr.length };
+    }
   }
-  const dtStep = tEval.length >= 2 ? (tEval[tEval.length - 1] - tEval[0]) / (tEval.length - 1) : 0.01;
+
+  // Pre-compute tEval points (fixed time range for sharpness evaluation)
+  const tEval = [];
+  for (let j = 0; j < nTime; j++) {
+    if (time[j] >= -0.5 && time[j] <= 0.5) tEval.push(time[j]);
+  }
+  const tEvalLen = tEval.length;
+  const dtStep = tEvalLen >= 2 ? (tEval[tEvalLen - 1] - tEval[0]) / (tEvalLen - 1) : 0.01;
+  const invDtStep = 1.0 / dtStep;
 
   function costFunc(coeffs) {
-    const t0Fit = polyval(coeffs, wl);
-    const refT0 = t0Fit.reduce((a, b) => a + b, 0) / t0Fit.length;
-    const dtShifts = t0Fit.map(t => t - refT0);
-    const maxShift = Math.max(...dtShifts.map(Math.abs));
-    if (maxShift > 5.0) return 1e10 * (1 + maxShift);
-    let totalSharpness = 0, nValidWl = 0;
+    // Evaluate polynomial for all wavelengths
+    const c0 = coeffs[0], c1 = coeffs[1], c2 = coeffs[2];
+    let refT0 = 0;
+    const dtArr = new Float64Array(nWl);
     for (let i = 0; i < nWl; i++) {
-      const dt = dtShifts[i];
-      const timeShifted = time.map(t => t - dt);
-      const vx = [], vy = [];
-      for (let j = 0; j < ta[i].length; j++) {
-        if (!isNaN(ta[i][j])) { vx.push(timeShifted[j]); vy.push(ta[i][j]); }
-      }
-      if (vx.length < 5) continue;
-      const sigAtEval = interp1d(vx, vy, tEval);
-      const validSig = sigAtEval.filter(v => !isNaN(v));
-      if (validSig.length < 2) continue;
-      let maxGrad = 0;
-      for (let k = 1; k < validSig.length; k++) {
-        const grad = Math.abs((validSig[k] - validSig[k - 1]) / dtStep);
-        if (grad > maxGrad) maxGrad = grad;
-      }
-      totalSharpness += maxGrad;
-      nValidWl++;
+      const xi = wl[i];
+      const t0 = c0 + c1 * xi + c2 * xi * xi;
+      dtArr[i] = t0;
+      refT0 += t0;
     }
+    refT0 /= nWl;
+
+    // Early exit: check max shift before doing any interpolation
+    let maxShift = 0;
+    for (let i = 0; i < nWl; i++) {
+      const s = dtArr[i] - refT0;
+      if (s > maxShift) maxShift = s;
+      else if (-s > maxShift) maxShift = -s;
+    }
+    if (maxShift > 5.0) return 1e10 * (1 + maxShift);
+
+    let totalSharpness = 0, nValidWl = 0;
+
+    for (let i = 0; i < nWl; i++) {
+      const pv = precompValid[i];
+      if (!pv) continue;
+
+      const dt = dtArr[i] - refT0;
+      const vx = pv.vx, vy = pv.vy, vxLen = pv.len;
+      const vx0 = vx[0], vxLast = vx[vxLen - 1];
+
+      // Inline interpolation at tEval + dt, compute max gradient in one pass
+      let maxGrad = 0, prevSig = NaN, validCount = 0;
+
+      for (let k = 0; k < tEvalLen; k++) {
+        const xn = tEval[k] + dt;
+        if (xn < vx0 || xn > vxLast) continue;
+
+        // Binary search on vx (sorted)
+        let lo = 0, hi = vxLen - 1;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1;
+          if (vx[mid] <= xn) lo = mid; else hi = mid;
+        }
+
+        const denom = vx[hi] - vx[lo];
+        const sig = Math.abs(denom) > 1e-15
+          ? vy[lo] + (xn - vx[lo]) / denom * (vy[hi] - vy[lo])
+          : vy[lo];
+
+        if (validCount > 0) {
+          const grad = Math.abs((sig - prevSig)) * invDtStep;
+          if (grad > maxGrad) maxGrad = grad;
+        }
+        prevSig = sig;
+        validCount++;
+      }
+
+      if (validCount >= 2) {
+        totalSharpness += maxGrad;
+        nValidWl++;
+      }
+    }
+
     if (nValidWl === 0) return 1e10;
-    let reg = 0;
-    for (let k = 0; k < coeffs.length; k++) reg += (coeffs[k] - initialCoeffs[k]) ** 2;
-    reg = 0.01 * reg / coeffs.length;
+
+    const d0 = coeffs[0] - initialCoeffs[0];
+    const d1 = coeffs[1] - initialCoeffs[1];
+    const d2 = coeffs[2] - initialCoeffs[2];
+    const reg = 0.01 * (d0 * d0 + d1 * d1 + d2 * d2) / 3;
     return -totalSharpness / nValidWl + reg;
   }
 
-  const result = await nelderMead(costFunc, initialCoeffs, 3000);
+  const result = await nelderMead(costFunc, initialCoeffs, 1500);
   const optimalCoeffs = result.x;
   const { TA2D } = applyChirpShift(time, wl, ta, optimalCoeffs);
   return { TA2D, coeffs: optimalCoeffs, t0PerWl };
