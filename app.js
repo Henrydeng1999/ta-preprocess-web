@@ -1376,6 +1376,7 @@ function applyManualChirp(baseName, divId) {
 
   // Update chirp compare
   const beforeHm = makeHeatmapData(data.timeArray, data.wavelengthArray, data.taBefore, tRange);
+  const afterHm = makeHeatmapData(data.timeArray, data.wavelengthArray, taAfter, tRange);
   Plotly.react($(`${divId}_chirpCompare`), [
     { z: beforeHm.z, x: beforeHm.tPlot, y: data.wavelengthArray, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
     { z: afterHm.z, x: afterHm.tPlot, y: data.wavelengthArray, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
