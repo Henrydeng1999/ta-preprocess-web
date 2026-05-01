@@ -258,9 +258,37 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
   <div id="resultsArea"></div>
 </div>
 
-<div style="position:fixed;bottom:12px;right:16px;font-size:11px;color:#777;z-index:999;letter-spacing:1px;font-family:'Courier New',monospace;">v1.0.1</div>
+<div style="position:fixed;bottom:12px;right:16px;font-size:11px;color:#777;z-index:999;letter-spacing:1px;font-family:'Courier New',monospace;">v2.0.0-wasm</div>
 
-<script src="app.js?v=1.3.1"></script>
+<script type="module">
+import init, {
+  parse_csv_wasm,
+  parse_ufs_wasm,
+  crop_wavelength,
+  baseline_subtraction,
+  chirp_correction_half_height,
+  chirp_correction_global,
+  apply_chirp_with_coeffs,
+  fit_multi_exp,
+  polyfit_wasm,
+  polyval_wasm,
+  greet
+} from './pkg/ta_wasm.js';
+
+async function loadWasm() {
+  await init();
+  window.taWasm = {
+    parse_csv_wasm, parse_ufs_wasm, crop_wavelength,
+    baseline_subtraction, chirp_correction_half_height,
+    chirp_correction_global, apply_chirp_with_coeffs,
+    fit_multi_exp, polyfit_wasm, polyval_wasm, greet
+  };
+  console.log('[WASM] TA core loaded:', greet());
+  window.dispatchEvent(new CustomEvent('wasm-ready'));
+}
+loadWasm();
+</script>
+<script src="app.js?v=2.0.0"></script>
 <script>
 (function(){
   const container = document.getElementById('particles');

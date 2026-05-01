@@ -1,0 +1,22 @@
+# === Rust/WASM 构建产物 ===
+core/target/
+**/*.wasm
+**/*.d
+**/*.rlib
+**/*.rmeta
+**/*.so
+
+# === Node.js ===
+node_modules/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# === IDE ===
+.idea/
+.vscode/
+*.code-workspace
