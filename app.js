@@ -95,10 +95,15 @@ window.addEventListener('wasm-ready', function() {
           new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length, new Float64Array(coeffs)
         );
         if (!ret || ret.length === 0) {
-          console.warn('[WASM] applyChirpShift: empty return, fallback');
+          console.warn('[WASM] applyChirpShift: empty return, fallback to JS');
           return _origApplyChirpShift(time, wl, ta, coeffs);
         }
-        return _unflattenTA(ret, ta.length, time.length);
+        var result = _unflattenTA(ret, ta.length, time.length);
+        if (!result || result.length === 0 || result[0].length === 0) {
+          console.warn('[WASM] applyChirpShift: unflatten failed, fallback to JS');
+          return _origApplyChirpShift(time, wl, ta, coeffs);
+        }
+        return result;
       } catch(e) {
         console.warn('[WASM] applyChirpShift fallback:', e);
         return _origApplyChirpShift(time, wl, ta, coeffs);
@@ -784,7 +789,17 @@ function makeHeatmapData(time, wl, ta, tRange) {
   for (let j = 0; j < time.length; j++) {
     if (time[j] >= tRange[0] && time[j] <= tRange[1]) { tMaskIdx.push(j); tPlot.push(time[j]); }
   }
-  const z = ta.map(row => tMaskIdx.map(j => isNaN(row[j]) ? null : row[j] * 1000));
+  // Build z matrix: z[row][col] = z[y][x]
+  // x-axis = wavelength, y-axis = time
+  // So z has time rows and wavelength columns
+  const z = [];
+  for (let j = 0; j < tMaskIdx.length; j++) {
+    const row = [];
+    for (let i = 0; i < wl.length; i++) {
+      row.push(isNaN(ta[i][tMaskIdx[j]]) ? null : ta[i][tMaskIdx[j]] * 1000);
+    }
+    z.push(row);
+  }
   return { tPlot, z };
 }
 
@@ -1001,6 +1016,8 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
               <option value="1">1指数</option>
               <option value="2" selected>2指数</option>
               <option value="3">3指数</option>
+              <option value="4">4指数</option>
+              <option value="5">5指数</option>
             </select>
           </div>
           <div class="param-group">
@@ -1101,13 +1118,19 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   Plotly.newPlot($(`${divId}_afterKin`), kinTracesAfter, { ...kinLayout, title: '校正后' }, { responsive: true });
 
   const chirpTraces = [];
+
+  // Always show half-height reference points
   const validWl = [], validT0 = [];
   for (let i = 0; i < wl.length; i++) {
     if (!isNaN(t0PerWl[i])) { validWl.push(wl[i]); validT0.push(t0PerWl[i] * 1000); }
   }
   chirpTraces.push({ x: validWl, y: validT0, mode: 'markers', name: '半高点法t0', marker: { size: 4, opacity: 0.5, color: 'blue' } });
 
-  if (coeffs) {
+  if (chirpMethod === 'manual') {
+    // Manual mode: add user-selected points (green) and fit curve (red)
+    chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: '#00cc00', symbol: 'circle' }, text: [], textposition: 'top center', textfont: { size: 9, color: '#00cc00' } });
+  } else if (coeffs) {
+    // Half-height / global mode: show fitted curve
     const wlFine = linspace(wl[0], wl[wl.length - 1], 200);
     const t0Fit = polyval(coeffs, wlFine).map(v => v * 1000);
     chirpTraces.push({ x: wlFine, y: t0Fit, mode: 'lines', name: chirpMethod === 'global' ? '全局优化拟合' : '多项式拟合', line: { color: 'red', width: 2 } });
@@ -1118,13 +1141,20 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     }
   }
 
-  // Manual mode: add trace for user-selected points + click handler
+  // Store initial axis ranges for manual mode to prevent auto-rescaling
   if (chirpMethod === 'manual') {
-    chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: 'black', symbol: 'x' }, text: [], textposition: 'top center', textfont: { size: 9, color: 'black' } });
+    const validT0Fs = t0PerWl.filter(v => !isNaN(v)).map(v => v * 1000);
+    const yMin = validT0Fs.length > 0 ? Math.min(...validT0Fs) * 0.8 : -1000;
+    const yMax = validT0Fs.length > 0 ? Math.max(...validT0Fs) * 1.2 : 1000;
+    window._manualChirpAxisRange = {
+      x: [wl[0], wl[wl.length - 1]],
+      y: [yMin, yMax]
+    };
   }
 
   Plotly.newPlot($(`${divId}_chirpCurve`), chirpTraces, {
-    xaxis: { title: '波长 (nm)' }, yaxis: { title: 't0 (fs)' },
+    xaxis: { title: '波长 (nm)', range: chirpMethod === 'manual' ? window._manualChirpAxisRange?.x : undefined },
+    yaxis: { title: 't0 (fs)', range: chirpMethod === 'manual' ? window._manualChirpAxisRange?.y : undefined },
     title: '啁啾曲线', margin: { l: 60, r: 20, t: 40, b: 50 },
     clickmode: 'event+select'
   }, { responsive: true });
@@ -1135,11 +1165,26 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     window._manualChirpData[divId] = { points: [], baseName, wl, time, taBefore };
 
     const chirpEl = $(`${divId}_chirpCurve`);
+    // Add a transparent scatter trace covering the whole plot area to capture clicks anywhere
+    Plotly.addTraces(chirpEl, {
+      x: [wl[0], wl[wl.length - 1]],
+      y: [Math.min(...validT0) * 0.5, Math.max(...validT0) * 1.5],
+      mode: 'markers',
+      marker: { size: 1, opacity: 0 },
+      name: '_click_capture_',
+      hoverinfo: 'skip',
+      showlegend: false
+    });
+
     chirpEl.on('plotly_click', function(eventData) {
-      const pt = eventData.points[0];
-      if (!pt) return;
-      const xVal = pt.x;
-      const yVal = pt.y;
+      var xVal, yVal;
+      // If clicked on an existing trace point, use that
+      if (eventData.points && eventData.points.length > 0) {
+        const pt = eventData.points[0];
+        xVal = pt.x;
+        yVal = pt.y;
+      }
+      if (xVal === undefined || yVal === undefined) return;
       const md = window._manualChirpData[divId];
       md.points.push({ wl: xVal, t0: yVal });
       updateManualChirpPlot(divId);
@@ -1147,16 +1192,16 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   }
 
   Plotly.newPlot($(`${divId}_chirpCompare`), [
-    { z: beforeData.z, x: beforeData.tPlot, y: wl, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
-    { z: afterData.z, x: afterData.tPlot, y: wl, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
+    { z: beforeData.z, x: wl, y: beforeData.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
+    { z: afterData.z, x: wl, y: afterData.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
   ], {
     title: '校正前后对比',
     grid: { columns: 2, rows: 1, pattern: 'independent', xgap: 0.08 },
     margin: { l: 60, r: 20, t: 40, b: 50 },
-    xaxis: { title: '时间 (ps)', domain: [0, 0.46] },
-    yaxis: { title: '波长 (nm)' },
-    xaxis2: { title: '时间 (ps)', anchor: 'y2' },
-    yaxis2: { title: '波长 (nm)', anchor: 'x2' },
+    xaxis: { title: '波长 (nm)', domain: [0, 0.46] },
+    yaxis: { title: '时间 (ps)' },
+    xaxis2: { title: '波长 (nm)', anchor: 'y2' },
+    yaxis2: { title: '时间 (ps)', anchor: 'x2' },
     annotations: [
       { text: '校正前', x: 0.22, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } },
       { text: '校正后', x: 0.78, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } }
@@ -1426,12 +1471,32 @@ function updateManualChirpPlot(divId) {
   const yPts = pts.map(p => p.t0);
   const labels = pts.map((p, i) => `#${i+1}: ${p.wl.toFixed(1)}nm, ${p.t0.toFixed(0)}fs`);
 
-  // Update trace index 2 (manual points trace)
-  Plotly.update(chirpEl, {
-    x: [xPts],
-    y: [yPts],
-    text: [labels]
-  }, {}, [2]);
+  // Update or add manual points trace (keep axis range fixed)
+  const existingTraces = chirpEl.data;
+  const manualTraceIdx = existingTraces.findIndex(t => t.name === '手动选点');
+  const axisRange = window._manualChirpAxisRange;
+  const fixedLayout = axisRange ? {
+    'xaxis.range': axisRange.x,
+    'yaxis.range': axisRange.y
+  } : {};
+  if (manualTraceIdx >= 0) {
+    Plotly.update(chirpEl, {
+      x: [xPts],
+      y: [yPts],
+      text: [labels]
+    }, fixedLayout, [manualTraceIdx]);
+  } else {
+    Plotly.addTraces(chirpEl, {
+      x: xPts, y: yPts, mode: 'markers+text',
+      name: '手动选点',
+      marker: { size: 10, color: '#ff6600', symbol: 'diamond' },
+      text: labels,
+      textposition: 'top center'
+    });
+    if (axisRange) {
+      Plotly.relayout(chirpEl, fixedLayout);
+    }
+  }
 
   // If enough points, also show the fit curve as trace 3
   // We add trace 3 dynamically or update it
@@ -1443,25 +1508,30 @@ function updateManualChirpPlot(divId) {
     const wlFine = linspace(md.wl[0], md.wl[md.wl.length - 1], 200);
     const t0Fit = polyval(coeffs, wlFine).map(v => v * 1000);
 
-    // Check if trace 3 exists (fit curve)
+    // Check if fit curve trace exists
     const existingTraces = chirpEl.data;
-    if (existingTraces.length > 3) {
+    const fitTraceIdx = existingTraces.findIndex(t => t.name && t.name.startsWith('手动拟合'));
+    if (fitTraceIdx >= 0) {
       Plotly.update(chirpEl, {
         x: [wlFine],
         y: [t0Fit]
-      }, {}, [3]);
+      }, fixedLayout, [fitTraceIdx]);
     } else {
       Plotly.addTraces(chirpEl, {
         x: wlFine, y: t0Fit, mode: 'lines',
         name: `手动拟合 (${actualOrder}阶)`,
-        line: { color: '#00cc00', width: 2 }
+        line: { color: '#ff0000', width: 2 }
       });
+      if (axisRange) {
+        Plotly.relayout(chirpEl, fixedLayout);
+      }
     }
   } else {
     // Remove fit curve if not enough points
     const existingTraces = chirpEl.data;
-    if (existingTraces.length > 3) {
-      Plotly.deleteTraces(chirpEl, [3]);
+    const fitTraceIdx = existingTraces.findIndex(t => t.name && t.name.startsWith('手动拟合'));
+    if (fitTraceIdx >= 0) {
+      Plotly.deleteTraces(chirpEl, [fitTraceIdx]);
     }
   }
 }
@@ -1473,8 +1543,11 @@ function undoLastManualPoint(divId) {
 
   // Also remove fit curve trace if it exists
   const chirpEl = $(`${divId}_chirpCurve`);
-  if (chirpEl && chirpEl.data.length > 3) {
-    Plotly.deleteTraces(chirpEl, [3]);
+  if (chirpEl) {
+    const fitTraceIdx = chirpEl.data.findIndex(t => t.name && t.name.startsWith('手动拟合'));
+    if (fitTraceIdx >= 0) {
+      Plotly.deleteTraces(chirpEl, [fitTraceIdx]);
+    }
   }
 
   updateManualChirpPlot(divId);
@@ -1511,7 +1584,11 @@ function applyManualChirp(baseName, divId) {
   const data = window[`data_${baseName}`];
   if (!data) return;
 
-  const { TA2D: taAfter } = applyChirpShift(data.timeArray, data.wavelengthArray, data.taBefore, coeffs);
+  var taAfter = applyChirpShift(data.timeArray, data.wavelengthArray, data.taBefore, coeffs);
+  if (!taAfter || taAfter.length === 0) {
+    console.warn('[applyManualChirp] applyChirpShift returned empty, using taBefore');
+    taAfter = data.taBefore;
+  }
 
   // Update stored data
   data.TA2D = taAfter;
@@ -1525,19 +1602,19 @@ function applyManualChirp(baseName, divId) {
   const beforeHm = makeHeatmapData(data.timeArray, data.wavelengthArray, data.taBefore, tRange);
   const afterHm = makeHeatmapData(data.timeArray, data.wavelengthArray, taAfter, tRange);
   Plotly.react($(`${divId}_chirpCompare`), [
-    { z: beforeHm.z, x: beforeHm.tPlot, y: data.wavelengthArray, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
-    { z: afterHm.z, x: afterHm.tPlot, y: data.wavelengthArray, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
+    { z: beforeHm.z, x: data.wavelengthArray, y: beforeHm.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
+    { z: afterHm.z, x: data.wavelengthArray, y: afterHm.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
   ], {
     title: '校正前后对比',
     grid: { columns: 2, rows: 1, pattern: 'independent', xgap: 0.08 },
     margin: { l: 60, r: 20, t: 40, b: 50 },
-    xaxis: { title: '时间 (ps)', domain: [0, 0.46] }, yaxis: { title: '波长 (nm)' },
-    xaxis2: { title: '时间 (ps)', anchor: 'y2' }, yaxis2: { title: '波长 (nm)', anchor: 'x2' },
+    xaxis: { title: '波长 (nm)', domain: [0, 0.46] }, yaxis: { title: '时间 (ps)' },
+    xaxis2: { title: '波长 (nm)', anchor: 'y2' }, yaxis2: { title: '时间 (ps)', anchor: 'x2' },
     annotations: [
       { text: '校正前', x: 0.22, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } },
       { text: '校正后', x: 0.78, y: 1.05, xref: 'paper', yref: 'paper', showarrow: false, font: { size: 12 } }
     ]
-  }, { responsive: true });
+  });
 
   // Update kinetic traces (after)
   const probeWlStr = $('probeWl').value;
@@ -1580,9 +1657,16 @@ function applyManualChirp(baseName, divId) {
 }
 
 function multiExpFunc(params, t, nExp) {
-  let y = params[params.length - 1];
-  for (let k = 0; k < nExp; k++) {
-    y += params[k * 2] * Math.exp(-t / params[k * 2 + 1]);
+  var y = params[params.length - 1];
+  for (var k = 0; k < nExp; k++) {
+    var amp = params[k * 2];
+    var tau = params[k * 2 + 1];
+    if (t < 0) continue;
+    if (Math.abs(tau) > 1e-12) {
+      y += amp * Math.exp(-t / tau);
+    } else {
+      y += amp;
+    }
   }
   return y;
 }
@@ -1600,30 +1684,67 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const sFit = fitIdx.map(j => signal[j]);
 
   const sMax = Math.max(...sFit.map(Math.abs));
+  const sMin = Math.min(...sFit);
+  const sRange = sMax - sMin;
   const sMean = sFit.reduce((a, b) => a + b, 0) / sFit.length;
+  const sFirst = sFit[0];
+  const sLast = sFit[sFit.length - 1];
 
-  let x0 = [];
-  const tauGuesses = [1.0, 0.3, 5.0];
-  for (let k = 0; k < nExp; k++) {
-    x0.push(sMax / nExp * (k === 0 ? 1 : 0.5));
-    x0.push(tauGuesses[k]);
-  }
-  x0.push(0);
+  const tMin = Math.max(tFit[0], 0.01);
+  const tMax = tFit[tFit.length - 1];
+  const logTMin = Math.log(tMin);
+  const logTMax = Math.log(tMax);
+  const logRange = logTMax - logTMin;
 
-  function costFunc(params) {
-    let ss = 0;
-    for (let i = 0; i < tFit.length; i++) {
-      const yPred = multiExpFunc(params, tFit[i], nExp);
-      ss += (yPred - sFit[i]) ** 2;
+  const tauFracs = {
+    1: [[0.5]],
+    2: [[0.2, 0.8], [0.15, 0.65], [0.3, 0.85]],
+    3: [[0.1, 0.4, 0.8], [0.15, 0.45, 0.75]],
+    4: [[0.08, 0.25, 0.55, 0.85], [0.1, 0.3, 0.6, 0.9]],
+    5: [[0.05, 0.2, 0.4, 0.65, 0.9], [0.08, 0.25, 0.5, 0.75, 0.95]]
+  };
+
+  const ampStrategies = [
+    function(k) { return k === 0 ? sFirst - sLast : sRange / nExp; },
+    function(k) { return sRange / nExp; },
+    function(k) { return sRange * Math.pow(0.5, k + 1); }
+  ];
+
+  const fracs = tauFracs[nExp] || [[0.5]];
+  let bestResult = null;
+  let bestChi2 = Infinity;
+
+  for (const fr of fracs) {
+    for (const ampFn of ampStrategies) {
+      const x0 = [];
+      for (let k = 0; k < nExp; k++) {
+        x0.push(ampFn(k));
+        x0.push(Math.exp(logTMin + fr[k] * logRange));
+      }
+      x0.push(sLast * 0.5);
+
+      function costFunc(params) {
+        let ss = 0;
+        for (let i = 0; i < tFit.length; i++) {
+          const yPred = multiExpFunc(params, tFit[i], nExp);
+          ss += (yPred - sFit[i]) ** 2;
+        }
+        for (let k = 0; k < nExp; k++) {
+          if (params[k * 2 + 1] < 0.001) ss += 1e6;
+        }
+        return ss;
+      }
+
+      const result = await nelderMead(costFunc, x0, 3000);
+      if (result.fVal < bestChi2) {
+        bestChi2 = result.fVal;
+        bestResult = result;
+      }
     }
-    for (let k = 0; k < nExp; k++) {
-      if (params[k * 2 + 1] < 0.001) ss += 1e6;
-    }
-    return ss;
   }
 
-  const result = await nelderMead(costFunc, x0, 5000);
-  const bestParams = result.x;
+  if (!bestResult) return null;
+  const bestParams = bestResult.x;
 
   for (let k = 0; k < nExp; k++) {
     if (bestParams[k * 2 + 1] < 0) {
@@ -1647,11 +1768,11 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   let ssTot = 0;
   const sMeanVal = sFit.reduce((a, b) => a + b, 0) / sFit.length;
   for (let i = 0; i < sFit.length; i++) ssTot += (sFit[i] - sMeanVal) ** 2;
-  const r2 = 1 - result.fVal / ssTot;
+  const r2 = 1 - bestResult.fVal / ssTot;
 
   const nP = finalParams.length;
   const nD = tFit.length;
-  const sigma2 = result.fVal / (nD - nP);
+  const sigma2 = bestResult.fVal / (nD - nP);
 
   const eps = 1e-8;
   const J = [];
