@@ -216,6 +216,26 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
         </select>
       </div>
       <div class="param-group">
+        <label>自动方法多项式阶数</label>
+        <select id="polyOrder">
+          <option value="2">2 阶</option>
+          <option value="3" selected>3 阶</option>
+          <option value="4">4 阶</option>
+        </select>
+      </div>
+      <div class="param-group">
+        <label>SNR 过滤阈值</label>
+        <input type="number" id="snrThreshold" value="3.0" step="0.5" min="0">
+      </div>
+      <div class="param-group">
+        <label>t0 搜索下限 (ps)</label>
+        <input type="number" id="t0SearchMin" value="-2.0" step="0.5">
+      </div>
+      <div class="param-group">
+        <label>t0 搜索上限 (ps)</label>
+        <input type="number" id="t0SearchMax" value="2.0" step="0.5">
+      </div>
+      <div class="param-group">
         <label>显示时间下限 (ps)</label>
         <input type="number" id="tViewMin" value="-1.0" step="0.5">
       </div>

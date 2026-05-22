@@ -56,6 +56,7 @@ window.addEventListener('wasm-ready', function() {
     _origFitMultiExp = fitMultiExp;
     _origChirpHalfHeight = chirpCorrectionHalfHeight;
     _origChirpGlobal = chirpCorrectionGlobal;
+    _origApplyChirpShift = applyChirpShift;
 
     polyfit = function(x, y, order) {
       try {
@@ -110,7 +111,8 @@ window.addEventListener('wasm-ready', function() {
       }
     };
 
-    chirpCorrectionHalfHeight = function(time, wl, ta) {
+    chirpCorrectionHalfHeight = function(time, wl, ta, opts) {
+      if (opts) return _origChirpHalfHeight(time, wl, ta, opts);
       try {
         var flat = _flattenTA(ta);
         var ret = window.taWasm.chirp_correction_half_height(
@@ -119,16 +121,17 @@ window.addEventListener('wasm-ready', function() {
         var result = _wasmChirpResult(ret, ta.length, time.length);
         if (!result) {
           console.warn('[WASM] chirpHalfHeight fallback to JS');
-          return _origChirpHalfHeight(time, wl, ta);
+          return _origChirpHalfHeight(time, wl, ta, opts);
         }
         return result;
       } catch(e) {
         console.warn('[WASM] chirpHalfHeight fallback:', e);
-        return _origChirpHalfHeight(time, wl, ta);
+        return _origChirpHalfHeight(time, wl, ta, opts);
       }
     };
 
-    chirpCorrectionGlobal = function(time, wl, ta) {
+    chirpCorrectionGlobal = function(time, wl, ta, opts) {
+      if (opts) return _origChirpGlobal(time, wl, ta, opts);
       return _wasmAsync(function() {
         try {
           var flat = _flattenTA(ta);
@@ -138,12 +141,12 @@ window.addEventListener('wasm-ready', function() {
           var result = _wasmChirpResult(ret, ta.length, time.length);
           if (!result) {
             console.warn('[WASM] chirpGlobal fallback to JS');
-            return _origChirpGlobal(time, wl, ta);
+            return _origChirpGlobal(time, wl, ta, opts);
           }
           return result;
         } catch(e) {
           console.warn('[WASM] chirpGlobal fallback:', e);
-          return _origChirpGlobal(time, wl, ta);
+          return _origChirpGlobal(time, wl, ta, opts);
         }
       });
     };
@@ -467,6 +470,35 @@ function baselineSubtraction(time, ta, nBaseline) {
   return result;
 }
 
+function computeSnrPerWl(time, ta, nBaseline) {
+  let t0Idx = 0;
+  let minAbs = Infinity;
+  for (let i = 0; i < time.length; i++) {
+    if (Math.abs(time[i]) < minAbs) { minAbs = Math.abs(time[i]); t0Idx = i; }
+  }
+  const baselineStart = Math.max(0, t0Idx - nBaseline);
+  const snrPerWl = [];
+  for (let i = 0; i < ta.length; i++) {
+    const row = ta[i];
+    let noiseSum = 0, noiseCount = 0;
+    for (let j = baselineStart; j < t0Idx; j++) {
+      if (!isNaN(row[j])) { noiseSum += row[j]; noiseCount++; }
+    }
+    const noiseMean = noiseCount > 0 ? noiseSum / noiseCount : 0;
+    let noiseVarSum = 0;
+    for (let j = baselineStart; j < t0Idx; j++) {
+      if (!isNaN(row[j])) noiseVarSum += (row[j] - noiseMean) ** 2;
+    }
+    const noiseStd = noiseCount > 1 ? Math.sqrt(noiseVarSum / (noiseCount - 1)) : 1e-10;
+    let peakVal = 0;
+    for (let j = 0; j < row.length; j++) {
+      if (!isNaN(row[j]) && Math.abs(row[j]) > peakVal) peakVal = Math.abs(row[j]);
+    }
+    snrPerWl.push(noiseStd > 1e-15 ? peakVal / noiseStd : 0);
+  }
+  return snrPerWl;
+}
+
 function polyfit(x, y, order) {
   const n = x.length;
   const m = order + 1;
@@ -516,6 +548,46 @@ function polyval(coeffs, x) {
 function linspace(min, max, n) {
   const step = (max - min) / (n - 1);
   return Array.from({ length: n }, (_, i) => min + i * step);
+}
+
+function sigmaClipPolyfit(x, y, order, nIter, nSigma) {
+  let currentIdx = [];
+  for (let i = 0; i < x.length; i++) {
+    if (!isNaN(x[i]) && !isNaN(y[i])) currentIdx.push(i);
+  }
+  if (currentIdx.length < order + 1) {
+    return { coeffs: null, keptIdx: currentIdx, rejectedIdx: [] };
+  }
+  let allRejected = [];
+  for (let iter = 0; iter < nIter; iter++) {
+    const cx = currentIdx.map(i => x[i]);
+    const cy = currentIdx.map(i => y[i]);
+    const iterCoeffs = polyfit(cx, cy, order);
+    const yFit = polyval(iterCoeffs, cx);
+    const residuals = cy.map((v, i) => v - yFit[i]);
+    const resMean = residuals.reduce((a, b) => a + b, 0) / residuals.length;
+    const resStd = Math.sqrt(residuals.reduce((a, b) => a + (b - resMean) ** 2, 0) / Math.max(1, residuals.length - 1));
+    const newIdx = [];
+    const iterRejected = [];
+    for (let k = 0; k < currentIdx.length; k++) {
+      if (Math.abs(residuals[k] - resMean) > nSigma * resStd) {
+        iterRejected.push(currentIdx[k]);
+      } else {
+        newIdx.push(currentIdx[k]);
+      }
+    }
+    allRejected = allRejected.concat(iterRejected);
+    currentIdx = newIdx;
+    if (iterRejected.length === 0) break;
+    if (currentIdx.length < order + 1) break;
+  }
+  let coeffs = null;
+  if (currentIdx.length >= order + 1) {
+    const cx = currentIdx.map(i => x[i]);
+    const cy = currentIdx.map(i => y[i]);
+    coeffs = polyfit(cx, cy, order);
+  }
+  return { coeffs, keptIdx: currentIdx, rejectedIdx: allRejected };
 }
 
 function interp1d(xData, yData, xNew) {
@@ -657,33 +729,40 @@ async function nelderMead(costFunc, x0, maxIter = 3000) {
   return { x: simplex[bestIdx], fVal: fVals[bestIdx], iterations: iter };
 }
 
-function chirpCorrectionHalfHeight(time, wl, ta) {
-  const t0PerWl = findT0HalfHeight(time, ta, [-2.0, 2.0]);
-  const validX = [], validY = [];
-  for (let i = 0; i < wl.length; i++) {
-    if (!isNaN(t0PerWl[i])) { validX.push(wl[i]); validY.push(t0PerWl[i]); }
-  }
-  if (validX.length < 3) return { TA2D: ta, coeffs: null, t0PerWl };
-  const coeffs = polyfit(validX, validY, 2);
-  const { TA2D } = applyChirpShift(time, wl, ta, coeffs);
-  return { TA2D, coeffs, t0PerWl };
+function chirpCorrectionHalfHeight(time, wl, ta, opts) {
+  const snrPerWl = computeSnrPerWl(time, ta, opts.nBaseline);
+  const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
+  const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
+  const snrFilteredOut = wl.map((_, i) => snrPerWl[i] < opts.snrThreshold);
+  const { coeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(wl, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
+  const sigmaClippedOut = wl.map(() => false);
+  for (const ri of rejectedIdx) sigmaClippedOut[ri] = true;
+  if (!coeffs) return { TA2D: ta, coeffs: null, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut };
+  const shiftResult = applyChirpShift(time, wl, ta, coeffs);
+  const taAfter = shiftResult.TA2D !== undefined ? shiftResult.TA2D : shiftResult;
+  return { TA2D: taAfter, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut };
 }
 
-async function chirpCorrectionGlobal(time, wl, ta) {
-  const t0PerWl = findT0HalfHeight(time, ta, [-2.0, 2.0]);
-  const validX = [], validY = [];
-  for (let i = 0; i < wl.length; i++) {
-    if (!isNaN(t0PerWl[i])) { validX.push(wl[i]); validY.push(t0PerWl[i]); }
+async function chirpCorrectionGlobal(time, wl, ta, opts) {
+  const snrPerWl = computeSnrPerWl(time, ta, opts.nBaseline);
+  const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
+  const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
+  const snrFilteredOut = wl.map((_, i) => snrPerWl[i] < opts.snrThreshold);
+  const { coeffs: initialCoeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(wl, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
+  const sigmaClippedOut = wl.map(() => false);
+  for (const ri of rejectedIdx) sigmaClippedOut[ri] = true;
+
+  if (!initialCoeffs || keptIdx.length < opts.polyOrder + 1) {
+    return { TA2D: ta, coeffs: null, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs: null };
   }
-  if (validX.length < 3) return { TA2D: ta, coeffs: null, t0PerWl };
-  const initialCoeffs = polyfit(validX, validY, 2);
 
   const nWl = wl.length;
   const nTime = time.length;
+  const nCoeffs = initialCoeffs.length;
 
-  // Pre-compute valid (non-NaN) data per wavelength — done once, reused in every costFunc call
   const precompValid = new Array(nWl);
   for (let i = 0; i < nWl; i++) {
+    if (snrFilteredOut[i]) continue;
     const row = ta[i];
     const vxArr = [], vyArr = [];
     for (let j = 0; j < nTime; j++) {
@@ -694,7 +773,6 @@ async function chirpCorrectionGlobal(time, wl, ta) {
     }
   }
 
-  // Pre-compute tEval points (fixed time range for sharpness evaluation)
   const tEval = [];
   for (let j = 0; j < nTime; j++) {
     if (time[j] >= -0.5 && time[j] <= 0.5) tEval.push(time[j]);
@@ -704,19 +782,19 @@ async function chirpCorrectionGlobal(time, wl, ta) {
   const invDtStep = 1.0 / dtStep;
 
   function costFunc(coeffs) {
-    // Evaluate polynomial for all wavelengths
-    const c0 = coeffs[0], c1 = coeffs[1], c2 = coeffs[2];
     let refT0 = 0;
     const dtArr = new Float64Array(nWl);
     for (let i = 0; i < nWl; i++) {
-      const xi = wl[i];
-      const t0 = c0 + c1 * xi + c2 * xi * xi;
+      let t0 = 0, xiPow = 1;
+      for (let k = 0; k < nCoeffs; k++) {
+        t0 += coeffs[k] * xiPow;
+        xiPow *= wl[i];
+      }
       dtArr[i] = t0;
       refT0 += t0;
     }
     refT0 /= nWl;
 
-    // Early exit: check max shift before doing any interpolation
     let maxShift = 0;
     for (let i = 0; i < nWl; i++) {
       const s = dtArr[i] - refT0;
@@ -735,14 +813,12 @@ async function chirpCorrectionGlobal(time, wl, ta) {
       const vx = pv.vx, vy = pv.vy, vxLen = pv.len;
       const vx0 = vx[0], vxLast = vx[vxLen - 1];
 
-      // Inline interpolation at tEval + dt, compute max gradient in one pass
       let maxGrad = 0, prevSig = NaN, validCount = 0;
 
       for (let k = 0; k < tEvalLen; k++) {
         const xn = tEval[k] + dt;
         if (xn < vx0 || xn > vxLast) continue;
 
-        // Binary search on vx (sorted)
         let lo = 0, hi = vxLen - 1;
         while (hi - lo > 1) {
           const mid = (lo + hi) >> 1;
@@ -770,17 +846,17 @@ async function chirpCorrectionGlobal(time, wl, ta) {
 
     if (nValidWl === 0) return 1e10;
 
-    const d0 = coeffs[0] - initialCoeffs[0];
-    const d1 = coeffs[1] - initialCoeffs[1];
-    const d2 = coeffs[2] - initialCoeffs[2];
-    const reg = 0.01 * (d0 * d0 + d1 * d1 + d2 * d2) / 3;
+    let reg = 0;
+    for (let k = 0; k < nCoeffs; k++) reg += (coeffs[k] - initialCoeffs[k]) ** 2;
+    reg = 0.01 * reg / nCoeffs;
     return -totalSharpness / nValidWl + reg;
   }
 
   const result = await nelderMead(costFunc, initialCoeffs, 3000);
   const optimalCoeffs = result.x;
-  const { TA2D } = applyChirpShift(time, wl, ta, optimalCoeffs);
-  return { TA2D, coeffs: optimalCoeffs, t0PerWl };
+  const shiftResult = applyChirpShift(time, wl, ta, optimalCoeffs);
+  const taAfter = shiftResult.TA2D !== undefined ? shiftResult.TA2D : shiftResult;
+  return { TA2D: taAfter, coeffs: optimalCoeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs };
 }
 
 function makeHeatmapData(time, wl, ta, tRange) {
@@ -811,10 +887,23 @@ async function processAll() {
   const wlMax = parseFloat($('wlMax').value);
   const nBaseline = parseInt($('nBaseline').value);
   const chirpMethod = $('chirpMethod').value;
+  const polyOrder = parseInt($('polyOrder').value);
+  const snrThreshold = parseFloat($('snrThreshold').value);
+  const t0SearchMin = parseFloat($('t0SearchMin').value);
+  const t0SearchMax = parseFloat($('t0SearchMax').value);
   const tViewMin = parseFloat($('tViewMin').value);
   const tViewMax = parseFloat($('tViewMax').value);
   const probeWlStr = $('probeWl').value;
   const probeWavelengths = probeWlStr.split(',').map(s => parseFloat(s.trim())).filter(v => !isNaN(v));
+
+  const chirpOpts = {
+    snrThreshold,
+    polyOrder,
+    searchRange: [t0SearchMin, t0SearchMax],
+    nIter: 3,
+    nSigma: 2.5,
+    nBaseline
+  };
 
   $('resultsArea').innerHTML = '';
   cancelProcessing = false;
@@ -904,23 +993,23 @@ async function processAll() {
 
     let chirpResult;
     if (chirpMethod === 'global') {
-      chirpResult = await chirpCorrectionGlobal(timeArray, wl, taBaseline);
+      chirpResult = await chirpCorrectionGlobal(timeArray, wl, taBaseline, chirpOpts);
     } else if (chirpMethod === 'manual') {
-      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
-      chirpResult = { TA2D: taBaseline, coeffs: null, t0PerWl: chirpResult.t0PerWl };
+      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline, chirpOpts);
+      chirpResult = { TA2D: taBaseline, coeffs: null, t0PerWl: chirpResult.t0PerWl, snrPerWl: chirpResult.snrPerWl, snrFilteredOut: chirpResult.snrFilteredOut, sigmaClippedOut: chirpResult.sigmaClippedOut };
     } else {
-      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline);
+      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline, chirpOpts);
     }
     if (chirpResult && typeof chirpResult.then === 'function') {
       chirpResult = await chirpResult;
     }
-    const { TA2D: taAfter, coeffs, t0PerWl } = chirpResult;
+    const { TA2D: taAfter, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs } = chirpResult;
 
     if (cancelProcessing) break;
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 渲染结果 ${file.name}...`, 'info', base + step * 3);
     await yieldThread();
 
-    renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths);
+    renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs);
   }
   $('processBtn').disabled = false;
   $('cancelBtn').style.display = 'none';
@@ -932,7 +1021,7 @@ async function processAll() {
   }
 }
 
-function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths) {
+function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs) {
   const baseName = fileName.replace('.csv', '').replace(/ /g, '_');
   const divId = `result_${baseName}`;
   const methodName = chirpMethod === 'global' ? '全局优化法' : chirpMethod === 'manual' ? '手动选点法' : '半高点法';
@@ -1119,24 +1208,63 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
 
   const chirpTraces = [];
 
-  // Always show half-height reference points
-  const validWl = [], validT0 = [];
-  for (let i = 0; i < wl.length; i++) {
-    if (!isNaN(t0PerWl[i])) { validWl.push(wl[i]); validT0.push(t0PerWl[i] * 1000); }
+  if (snrFilteredOut) {
+    const snrFiltWl = [], snrFiltT0 = [];
+    for (let i = 0; i < wl.length; i++) {
+      if (snrFilteredOut[i] && !isNaN(t0PerWl[i])) {
+        snrFiltWl.push(wl[i]);
+        snrFiltT0.push(t0PerWl[i] * 1000);
+      }
+    }
+    if (snrFiltWl.length > 0) {
+      chirpTraces.push({
+        x: snrFiltWl, y: snrFiltT0,
+        mode: 'markers', name: 'SNR过滤',
+        marker: { size: 4, color: 'gray', opacity: 0.4, symbol: 'circle' }
+      });
+    }
   }
-  chirpTraces.push({ x: validWl, y: validT0, mode: 'markers', name: '半高点法t0', marker: { size: 4, opacity: 0.5, color: 'blue' } });
+
+  if (sigmaClippedOut) {
+    const sigmaWl = [], sigmaT0 = [];
+    for (let i = 0; i < wl.length; i++) {
+      if (sigmaClippedOut[i] && !isNaN(t0PerWl[i])) {
+        sigmaWl.push(wl[i]);
+        sigmaT0.push(t0PerWl[i] * 1000);
+      }
+    }
+    if (sigmaWl.length > 0) {
+      chirpTraces.push({
+        x: sigmaWl, y: sigmaT0,
+        mode: 'markers', name: 'Sigma剔除',
+        marker: { size: 6, color: 'orange', opacity: 0.7, symbol: 'x' }
+      });
+    }
+  }
+
+  const keptWl = [], keptT0 = [];
+  for (let i = 0; i < wl.length; i++) {
+    const isFiltered = snrFilteredOut && snrFilteredOut[i];
+    const isClipped = sigmaClippedOut && sigmaClippedOut[i];
+    if (!isFiltered && !isClipped && !isNaN(t0PerWl[i])) {
+      keptWl.push(wl[i]);
+      keptT0.push(t0PerWl[i] * 1000);
+    }
+  }
+  chirpTraces.push({
+    x: keptWl, y: keptT0,
+    mode: 'markers', name: '有效t0',
+    marker: { size: 4, opacity: 0.5, color: 'blue' }
+  });
 
   if (chirpMethod === 'manual') {
-    // Manual mode: add user-selected points (green) and fit curve (red)
     chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: '#00cc00', symbol: 'circle' }, text: [], textposition: 'top center', textfont: { size: 9, color: '#00cc00' } });
   } else if (coeffs) {
-    // Half-height / global mode: show fitted curve
     const wlFine = linspace(wl[0], wl[wl.length - 1], 200);
     const t0Fit = polyval(coeffs, wlFine).map(v => v * 1000);
     chirpTraces.push({ x: wlFine, y: t0Fit, mode: 'lines', name: chirpMethod === 'global' ? '全局优化拟合' : '多项式拟合', line: { color: 'red', width: 2 } });
-    if (chirpMethod === 'global') {
-      const initCoeffs = polyfit(validWl, validT0.map(v => v / 1000), 2);
-      const t0Init = polyval(initCoeffs, wlFine).map(v => v * 1000);
+    if (chirpMethod === 'global' && initialCoeffs) {
+      const t0Init = polyval(initialCoeffs, wlFine).map(v => v * 1000);
       chirpTraces.push({ x: wlFine, y: t0Init, mode: 'lines', name: '初始估计拟合', line: { color: 'green', dash: 'dash', width: 1.5 } });
     }
   }
@@ -1168,7 +1296,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     // Add a transparent scatter trace covering the whole plot area to capture clicks anywhere
     Plotly.addTraces(chirpEl, {
       x: [wl[0], wl[wl.length - 1]],
-      y: [Math.min(...validT0) * 0.5, Math.max(...validT0) * 1.5],
+      y: [Math.min(...keptT0) * 0.5, Math.max(...keptT0) * 1.5],
       mode: 'markers',
       marker: { size: 1, opacity: 0 },
       name: '_click_capture_',
@@ -1211,10 +1339,13 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   if (coeffs) {
     const validT0Fs = t0PerWl.filter(v => !isNaN(v)).map(v => v * 1000);
     const refT0 = validT0Fs.reduce((a, b) => a + b, 0) / validT0Fs.length;
-    $(`${divId}_info`).innerHTML = `参考t0 = ${refT0.toFixed(1)} fs | 啁啾范围: ${Math.min(...validT0Fs).toFixed(1)} ~ ${Math.max(...validT0Fs).toFixed(1)} fs | 方法: ${methodName}`;
+    const nSnrFilt = snrFilteredOut ? snrFilteredOut.filter(v => v).length : 0;
+    const nSigmaClip = sigmaClippedOut ? sigmaClippedOut.filter(v => v).length : 0;
+    const nKept = keptWl.length;
+    $(`${divId}_info`).innerHTML = `参考t0 = ${refT0.toFixed(1)} fs | 啁啾范围: ${Math.min(...validT0Fs).toFixed(1)} ~ ${Math.max(...validT0Fs).toFixed(1)} fs | 方法: ${methodName} | SNR过滤: ${nSnrFilt}个 | Sigma剔除: ${nSigmaClip}个 | 拟合使用: ${nKept}个`;
   }
 
-  window[`data_${baseName}`] = { timeArray: time, wavelengthArray: wl, TA2D: taAfter, taBefore: taBefore, coeffs, t0PerWl };
+  window[`data_${baseName}`] = { timeArray: time, wavelengthArray: wl, TA2D: taAfter, taBefore: taBefore, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut };
 }
 
 function doSpectralSlice(baseName, divId) {
