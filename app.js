@@ -649,7 +649,9 @@ function findT0HalfHeight(time, ta, searchRange) {
 }
 
 function applyChirpShift(time, wl, ta, coeffs) {
-  const t0Fitted = polyval(coeffs, wl);
+  // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
+  const invL2 = wl.map(w => 1.0 / (w * w));
+  const t0Fitted = polyval(coeffs, invL2);
   const refT0 = t0Fitted.reduce((a, b) => a + b, 0) / t0Fitted.length;
   const corrected = ta.map((row, i) => {
     const dt = t0Fitted[i] - refT0;
@@ -734,7 +736,9 @@ function chirpCorrectionHalfHeight(time, wl, ta, opts) {
   const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
   const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
   const snrFilteredOut = wl.map((_, i) => snrPerWl[i] < opts.snrThreshold);
-  const { coeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(wl, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
+  // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
+  const invL2 = wl.map(w => 1.0 / (w * w));
+  const { coeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(invL2, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
   const sigmaClippedOut = wl.map(() => false);
   for (const ri of rejectedIdx) sigmaClippedOut[ri] = true;
   if (!coeffs) return { TA2D: ta, coeffs: null, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut };
@@ -748,7 +752,9 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
   const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
   const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
   const snrFilteredOut = wl.map((_, i) => snrPerWl[i] < opts.snrThreshold);
-  const { coeffs: initialCoeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(wl, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
+  // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
+  const invL2 = wl.map(w => 1.0 / (w * w));
+  const { coeffs: initialCoeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(invL2, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
   const sigmaClippedOut = wl.map(() => false);
   for (const ri of rejectedIdx) sigmaClippedOut[ri] = true;
 
@@ -788,7 +794,7 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
       let t0 = 0, xiPow = 1;
       for (let k = 0; k < nCoeffs; k++) {
         t0 += coeffs[k] * xiPow;
-        xiPow *= wl[i];
+        xiPow *= invL2[i]; // Fit in λ⁻² space: t₀ = a + b·(1/λ²) + c·(1/λ⁴)
       }
       dtArr[i] = t0;
       refT0 += t0;
@@ -1171,6 +1177,22 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   const beforeData = makeHeatmapData(time, wl, taBefore, tRange);
   const afterData = makeHeatmapData(time, wl, taAfter, tRange);
 
+  // Compute shared z range so both heatmaps use the same color scale
+  let zMin = Infinity, zMax = -Infinity;
+  for (const row of beforeData.z) {
+    for (const v of row) {
+      if (v !== null && v < zMin) zMin = v;
+      if (v !== null && v > zMax) zMax = v;
+    }
+  }
+  for (const row of afterData.z) {
+    for (const v of row) {
+      if (v !== null && v < zMin) zMin = v;
+      if (v !== null && v > zMax) zMax = v;
+    }
+  }
+  const zRange = Math.max(Math.abs(zMin), Math.abs(zMax));
+
   const tMaskIdx = [];
   const tPlot = [];
   for (let j = 0; j < time.length; j++) {
@@ -1261,10 +1283,11 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     chirpTraces.push({ x: [], y: [], mode: 'markers+text', name: '手动选点', marker: { size: 10, color: '#00cc00', symbol: 'circle' }, text: [], textposition: 'top center', textfont: { size: 9, color: '#00cc00' } });
   } else if (coeffs) {
     const wlFine = linspace(wl[0], wl[wl.length - 1], 200);
-    const t0Fit = polyval(coeffs, wlFine).map(v => v * 1000);
+    const invL2Fine = wlFine.map(w => 1.0 / (w * w));
+    const t0Fit = polyval(coeffs, invL2Fine).map(v => v * 1000);
     chirpTraces.push({ x: wlFine, y: t0Fit, mode: 'lines', name: chirpMethod === 'global' ? '全局优化拟合' : '多项式拟合', line: { color: 'red', width: 2 } });
     if (chirpMethod === 'global' && initialCoeffs) {
-      const t0Init = polyval(initialCoeffs, wlFine).map(v => v * 1000);
+      const t0Init = polyval(initialCoeffs, invL2Fine).map(v => v * 1000);
       chirpTraces.push({ x: wlFine, y: t0Init, mode: 'lines', name: '初始估计拟合', line: { color: 'green', dash: 'dash', width: 1.5 } });
     }
   }
@@ -1320,8 +1343,8 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   }
 
   Plotly.newPlot($(`${divId}_chirpCompare`), [
-    { z: beforeData.z, x: wl, y: beforeData.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
-    { z: afterData.z, x: wl, y: afterData.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
+    { z: beforeData.z, x: wl, y: beforeData.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, zmin: -zRange, zmax: zRange, name: '校正前', showscale: false },
+    { z: afterData.z, x: wl, y: afterData.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, zmin: -zRange, zmax: zRange, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
   ], {
     title: '校正前后对比',
     grid: { columns: 2, rows: 1, pattern: 'independent', xgap: 0.08 },
@@ -1732,9 +1755,13 @@ function applyManualChirp(baseName, divId) {
   // Update chirp compare
   const beforeHm = makeHeatmapData(data.timeArray, data.wavelengthArray, data.taBefore, tRange);
   const afterHm = makeHeatmapData(data.timeArray, data.wavelengthArray, taAfter, tRange);
+  let hmZMin = Infinity, hmZMax = -Infinity;
+  for (const row of beforeHm.z) { for (const v of row) { if (v !== null && v < hmZMin) hmZMin = v; if (v !== null && v > hmZMax) hmZMax = v; } }
+  for (const row of afterHm.z) { for (const v of row) { if (v !== null && v < hmZMin) hmZMin = v; if (v !== null && v > hmZMax) hmZMax = v; } }
+  const hmZRange = Math.max(Math.abs(hmZMin), Math.abs(hmZMax));
   Plotly.react($(`${divId}_chirpCompare`), [
-    { z: beforeHm.z, x: data.wavelengthArray, y: beforeHm.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正前', showscale: false },
-    { z: afterHm.z, x: data.wavelengthArray, y: afterHm.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
+    { z: beforeHm.z, x: data.wavelengthArray, y: beforeHm.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, zmin: -hmZRange, zmax: hmZRange, name: '校正前', showscale: false },
+    { z: afterHm.z, x: data.wavelengthArray, y: afterHm.tPlot, type: 'heatmap', colorscale: 'RdBu', reversescale: true, zmid: 0, zmin: -hmZRange, zmax: hmZRange, name: '校正后', xaxis: 'x2', yaxis: 'y2', showscale: false }
   ], {
     title: '校正前后对比',
     grid: { columns: 2, rows: 1, pattern: 'independent', xgap: 0.08 },
@@ -1777,7 +1804,8 @@ function applyManualChirp(baseName, divId) {
   }
 
   // Update info
-  const t0Fitted = polyval(coeffs, data.wavelengthArray);
+  const invL2display = data.wavelengthArray.map(w => 1.0 / (w * w));
+  const t0Fitted = polyval(coeffs, invL2display);
   const t0Fs = t0Fitted.map(v => v * 1000);
   const ref = t0Fs.reduce((a, b) => a + b, 0) / t0Fs.length;
   $(`${divId}_info`).innerHTML = `参考t0 = ${ref.toFixed(1)} fs | 啁啾范围: ${Math.min(...t0Fs).toFixed(1)} ~ ${Math.max(...t0Fs).toFixed(1)} fs | 方法: 手动选点法 (${actualOrder}阶) | ✅ 已应用`;
