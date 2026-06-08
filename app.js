@@ -394,6 +394,22 @@ document.addEventListener('DOMContentLoaded', function() {
       orderGroup.style.display = chirpSel.value === 'manual' ? '' : 'none';
     });
   }
+
+  // Show/hide CPM and IRF parameter groups
+  const cpmCb = $('doCpm');
+  const cpmGroup = $('cpmParamsGroup');
+  if (cpmCb && cpmGroup) {
+    cpmCb.addEventListener('change', () => { cpmGroup.style.display = cpmCb.checked ? '' : 'none'; });
+  }
+  const irfCb = $('doIrf');
+  const irfGroup = $('irfParamsGroup');
+  const irfIterGroup = $('irfIterGroup');
+  if (irfCb && irfGroup && irfIterGroup) {
+    irfCb.addEventListener('change', () => {
+      irfGroup.style.display = irfCb.checked ? '' : 'none';
+      irfIterGroup.style.display = irfCb.checked ? '' : 'none';
+    });
+  }
 });
 
 $('uploadZone').addEventListener('click', () => $('fileInput').click());

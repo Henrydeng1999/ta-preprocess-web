@@ -173,6 +173,81 @@ pub fn apply_chirp_with_coeffs(time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize
     flatten_2d(&result.ta_2d)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CpmOutput {
+    #[serde(rename = "ta_2d")]
+    ta_2d: Vec<f64>,
+    amplitudes: Vec<f64>,
+    sigmas: Vec<f64>,
+    deriv_amplitudes: Vec<f64>,
+    baselines: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IrfOutput {
+    #[serde(rename = "ta_2d")]
+    ta_2d: Vec<f64>,
+    irf_fwhm: f64,
+}
+
+#[wasm_bindgen]
+pub fn remove_cpm_wasm(
+    time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize,
+    fit_window: f64, n_baseline: usize,
+) -> JsValue {
+    if wl.len() != n_wl || ta.len() != n_wl * n_time {
+        let err = serde_json::json!({"error": "Dimension mismatch"});
+        return serde_wasm_bindgen::to_value(&err).unwrap();
+    }
+    let ta_2d = flatten_to_2d(ta, n_wl, n_time);
+    let result = cpm::remove_cpm(time, wl, &ta_2d, fit_window, n_baseline);
+    let output = CpmOutput {
+        ta_2d: flatten_2d(&result.ta_2d),
+        amplitudes: result.cpm_params.iter().map(|p| p.amplitude).collect(),
+        sigmas: result.cpm_params.iter().map(|p| p.sigma).collect(),
+        deriv_amplitudes: result.cpm_params.iter().map(|p| p.deriv_amplitude).collect(),
+        baselines: result.cpm_params.iter().map(|p| p.baseline).collect(),
+    };
+    serde_wasm_bindgen::to_value(&output).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn estimate_irf_wasm(
+    time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize,
+    n_wl_avg: usize,
+) -> JsValue {
+    if wl.len() != n_wl || ta.len() != n_wl * n_time {
+        let err = serde_json::json!({"error": "Dimension mismatch"});
+        return serde_wasm_bindgen::to_value(&err).unwrap();
+    }
+    let ta_2d = flatten_to_2d(ta, n_wl, n_time);
+    match irf::estimate_irf(time, &ta_2d, n_wl_avg) {
+        Some(est) => {
+            let output = serde_json::json!({"fwhm": est.fwhm, "sigma": est.sigma});
+            serde_wasm_bindgen::to_value(&output).unwrap()
+        }
+        None => JsValue::NULL,
+    }
+}
+
+#[wasm_bindgen]
+pub fn deconvolve_irf_wasm(
+    time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize,
+    irf_fwhm: f64, n_iter: usize,
+) -> JsValue {
+    if wl.len() != n_wl || ta.len() != n_wl * n_time {
+        let err = serde_json::json!({"error": "Dimension mismatch"});
+        return serde_wasm_bindgen::to_value(&err).unwrap();
+    }
+    let ta_2d = flatten_to_2d(ta, n_wl, n_time);
+    let result = irf::deconvolve_irf(time, wl, &ta_2d, irf_fwhm, n_iter);
+    let output = IrfOutput {
+        ta_2d: flatten_2d(&result.ta_2d),
+        irf_fwhm: result.irf_fwhm,
+    };
+    serde_wasm_bindgen::to_value(&output).unwrap()
+}
+
 #[wasm_bindgen]
 pub fn fit_multi_exp(time: &[f64], signal: &[f64], n_exp: usize, t_fit_min: f64, t_fit_max: f64) -> JsValue {
     let result = fitting::fit_multi_exp(time, signal, n_exp, t_fit_min, t_fit_max);
