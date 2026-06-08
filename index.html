@@ -253,23 +253,23 @@ body { font-family: 'Courier New', 'Microsoft YaHei', monospace; background: #1a
   </div>
 
   <div class="card">
-    <h2>🔧 高级选项</h2>
+    <h2><input type="checkbox" id="doCpm" style="margin-right:8px;">CPM 相干伪影去除</h2>
     <div class="params">
-      <div class="param-group" style="flex-basis:100%">
-        <label><input type="checkbox" id="doCpm"> CPM 相干伪影去除</label>
-      </div>
-      <div class="param-group" id="cpmParamsGroup" style="display:none">
+      <div class="param-group">
         <label>CPM 拟合窗口 (ps)</label>
         <input type="number" id="cpmFitWindow" value="0.5" step="0.1" min="0.1">
       </div>
-      <div class="param-group" style="flex-basis:100%">
-        <label><input type="checkbox" id="doIrf"> IRF 解卷积</label>
-      </div>
-      <div class="param-group" id="irfParamsGroup" style="display:none">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><input type="checkbox" id="doIrf" style="margin-right:8px;">IRF 解卷积</h2>
+    <div class="params">
+      <div class="param-group">
         <label>IRF FWHM (ps, 0=自动估算)</label>
         <input type="number" id="irfFwhm" value="0" step="0.01" min="0">
       </div>
-      <div class="param-group" id="irfIterGroup" style="display:none">
+      <div class="param-group">
         <label>LR 迭代次数</label>
         <input type="number" id="irfNIter" value="15" step="1" min="1" max="50">
       </div>
