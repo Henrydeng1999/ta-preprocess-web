@@ -153,7 +153,51 @@ window.addEventListener('wasm-ready', function() {
       });
     };
 
-    console.log('[WASM] Patched: polyfit, polyval, fitMultiExp, applyChirpShift, chirpCorrectionHalfHeight, chirpCorrectionGlobal');
+    var _origRemoveCpm = removeCpm;
+    removeCpm = function(time, wl, ta, fitWindow, nBaseline) {
+      try {
+        var flat = _flattenTA(ta);
+        var ret = window.taWasm.remove_cpm_wasm(
+          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+          fitWindow, nBaseline
+        );
+        if (ret && ret.ta_2d) {
+          return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length) };
+        }
+        console.warn('[WASM] removeCpm fallback to JS');
+        return _origRemoveCpm(time, wl, ta, fitWindow, nBaseline);
+      } catch(e) {
+        console.warn('[WASM] removeCpm fallback:', e);
+        return _origRemoveCpm(time, wl, ta, fitWindow, nBaseline);
+      }
+    };
+
+    var _origEstimateIrf = estimateIrf;
+    estimateIrf = function(time, ta, nWlAvg) {
+      // IRF estimation is fast, keep JS version
+      return _origEstimateIrf(time, ta, nWlAvg);
+    };
+
+    var _origDeconvolveIrf = deconvolveIrf;
+    deconvolveIrf = function(time, wl, ta, irfFwhm, nIter) {
+      try {
+        var flat = _flattenTA(ta);
+        var ret = window.taWasm.deconvolve_irf_wasm(
+          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+          irfFwhm, nIter
+        );
+        if (ret && ret.ta_2d) {
+          return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length), irfFwhm: ret.irf_fwhm };
+        }
+        console.warn('[WASM] deconvolveIrf fallback to JS');
+        return _origDeconvolveIrf(time, wl, ta, irfFwhm, nIter);
+      } catch(e) {
+        console.warn('[WASM] deconvolveIrf fallback:', e);
+        return _origDeconvolveIrf(time, wl, ta, irfFwhm, nIter);
+      }
+    };
+
+    console.log('[WASM] Patched: polyfit, polyval, fitMultiExp, applyChirpShift, chirpCorrectionHalfHeight, chirpCorrectionGlobal, removeCpm, deconvolveIrf');
   }
 });
 
@@ -862,6 +906,263 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
   return { TA2D: taAfter, coeffs: optimalCoeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs };
 }
 
+// ==================== CPM Removal ====================
+function removeCpm(time, wl, ta, fitWindow, nBaseline) {
+  // Find t=0 index
+  let t0Idx = 0, minAbsT = Infinity;
+  for (let i = 0; i < time.length; i++) {
+    if (Math.abs(time[i]) < minAbsT) { minAbsT = Math.abs(time[i]); t0Idx = i; }
+  }
+
+  // Baseline indices (t < 0)
+  const baselineIdx = [];
+  for (let j = 0; j < time.length; j++) {
+    if (time[j] < 0) baselineIdx.push(j);
+  }
+
+  const result = ta.map(row => {
+    const allNan = row.every(v => isNaN(v));
+    if (allNan) return [...row];
+
+    // Estimate baseline
+    let blSum = 0, blCount = 0;
+    for (let k = 0; k < Math.min(nBaseline, baselineIdx.length); k++) {
+      const j = baselineIdx[k];
+      if (!isNaN(row[j])) { blSum += row[j]; blCount++; }
+    }
+    const blEst = blCount > 0 ? blSum / blCount : 0;
+
+    // Estimate peak at t=0
+    let peakEst = 0;
+    if (!isNaN(row[t0Idx])) {
+      peakEst = row[t0Idx] - blEst;
+    } else {
+      for (let d = 1; d < 5; d++) {
+        if (t0Idx + d < time.length && !isNaN(row[t0Idx + d])) { peakEst = row[t0Idx + d] - blEst; break; }
+        if (t0Idx >= d && !isNaN(row[t0Idx - d])) { peakEst = row[t0Idx - d] - blEst; break; }
+      }
+    }
+
+    // Collect fit window data
+    const fitT = [], fitY = [];
+    for (let j = 0; j < time.length; j++) {
+      if (Math.abs(time[j]) <= fitWindow && !isNaN(row[j])) {
+        fitT.push(time[j]); fitY.push(row[j]);
+      }
+    }
+    if (fitT.length < 4) return [...row];
+
+    // CPM model: A*exp(-t²/(2σ²)) + B*(-t/σ²)*exp(-t²/(2σ²)) + C
+    function cpmModel(p, t) {
+      const [a, sigma, b, c] = p;
+      if (sigma <= 0) return c;
+      const gauss = Math.exp(-t * t / (2 * sigma * sigma));
+      return a * gauss + b * (-t / (sigma * sigma)) * gauss + c;
+    }
+
+    // Nelder-Mead fit
+    const x0 = [peakEst, 0.05, 0, blEst];
+    function cost(p) {
+      let ssr = 0;
+      for (let k = 0; k < fitT.length; k++) {
+        const r = cpmModel(p, fitT[k]) - fitY[k];
+        ssr += r * r;
+      }
+      if (p[1] <= 0) ssr += 1e10;
+      return ssr;
+    }
+    const fitted = nelderMeadSync(cost, x0, 2000);
+
+    if (fitted[1] <= 0 || isNaN(fitted[1]) || !isFinite(fitted[1])) return [...row];
+
+    const [aFit, sigmaFit, bFit, cFit] = fitted;
+
+    // Subtract CPM component
+    return row.map((v, j) => {
+      if (isNaN(v)) return NaN;
+      const t = time[j];
+      const gauss = Math.exp(-t * t / (2 * sigmaFit * sigmaFit));
+      const cpmComp = aFit * gauss + bFit * (-t / (sigmaFit * sigmaFit)) * gauss;
+      return v - cpmComp;
+    });
+  });
+
+  return { TA2D: result };
+}
+
+// Synchronous Nelder-Mead (simplified for CPM fitting)
+function nelderMeadSync(costFunc, x0, maxIter) {
+  const n = x0.length;
+  const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
+  let simplex = [x0.slice()];
+  let fVals = [costFunc(x0)];
+  for (let i = 0; i < n; i++) {
+    const xi = x0.slice();
+    xi[i] += Math.abs(xi[i]) > 1e-4 ? xi[i] * 0.05 : 0.1;
+    simplex.push(xi);
+    fVals.push(costFunc(xi));
+  }
+  for (let iter = 0; iter < maxIter; iter++) {
+    const order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
+    const best = order[0], worst = order[n], secondWorst = order[n - 1];
+    const centroid = Array(n).fill(0);
+    for (let i = 0; i <= n; i++) {
+      if (i !== worst) for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
+    }
+    const xRef = centroid.map((c, j) => c + alpha * (c - simplex[worst][j]));
+    const fRef = costFunc(xRef);
+    let shrink = false;
+    if (fRef < fVals[secondWorst] && fRef >= fVals[best]) {
+      simplex[worst] = xRef; fVals[worst] = fRef;
+    } else if (fRef < fVals[best]) {
+      const xExp = centroid.map((c, j) => c + gamma * (xRef[j] - c));
+      const fExp = costFunc(xExp);
+      simplex[worst] = fExp < fRef ? xExp : xRef; fVals[worst] = fExp < fRef ? fExp : fRef;
+    } else {
+      const xCon = centroid.map((c, j) => c + rho * (simplex[worst][j] - c));
+      const fCon = costFunc(xCon);
+      if (fCon < fVals[worst]) { simplex[worst] = xCon; fVals[worst] = fCon; }
+      else shrink = true;
+    }
+    if (shrink) {
+      for (let i = 1; i <= n; i++) {
+        simplex[i] = simplex[best].map((b, j) => b + sigma * (simplex[i][j] - b));
+        fVals[i] = costFunc(simplex[i]);
+      }
+    }
+    const fMax = Math.max(...fVals), fMin = Math.min(...fVals);
+    if ((fMax - fMin) / Math.max(Math.abs(fMax), Math.abs(fMin), 1) < 1e-10) break;
+  }
+  let bestIdx = 0;
+  for (let i = 1; i <= n; i++) if (fVals[i] < fVals[bestIdx]) bestIdx = i;
+  return simplex[bestIdx];
+}
+
+// ==================== IRF Deconvolution ====================
+function estimateIrf(time, ta, nWlAvg) {
+  const nWl = ta.length, nTime = time.length;
+  if (nTime < 5 || nWl === 0) return null;
+
+  // Average signal across central wavelengths
+  const half = Math.floor(nWlAvg / 2);
+  const wlStart = Math.max(0, Math.floor(nWl / 2) - half);
+  const wlEnd = Math.min(nWl, Math.floor(nWl / 2) + half);
+  const avgSignal = Array(nTime).fill(0);
+  const counts = Array(nTime).fill(0);
+  for (let i = wlStart; i < wlEnd; i++) {
+    for (let j = 0; j < nTime; j++) {
+      if (!isNaN(ta[i][j])) { avgSignal[j] += ta[i][j]; counts[j]++; }
+    }
+  }
+  for (let j = 0; j < nTime; j++) avgSignal[j] = counts[j] > 0 ? avgSignal[j] / counts[j] : NaN;
+
+  // Find t=0 index
+  let t0Idx = 0, minAbs = Infinity;
+  for (let i = 0; i < nTime; i++) { if (Math.abs(time[i]) < minAbs) { minAbs = Math.abs(time[i]); t0Idx = i; } }
+
+  // Compute derivative near t=0
+  const window = Math.min(nTime > 40 ? 20 : Math.floor(nTime / 2), t0Idx, nTime - t0Idx - 1);
+  const start = Math.max(0, t0Idx - window), end = Math.min(nTime, t0Idx + window);
+  if (end - start < 5) return null;
+
+  const derivT = [], derivY = [];
+  for (let j = start; j < end - 1; j++) {
+    const dt = time[j + 1] - time[j];
+    if (Math.abs(dt) < 1e-15 || isNaN(avgSignal[j + 1]) || isNaN(avgSignal[j])) continue;
+    derivT.push((time[j] + time[j + 1]) / 2);
+    derivY.push((avgSignal[j + 1] - avgSignal[j]) / dt);
+  }
+  if (derivT.length < 5) return null;
+
+  // Find peak of absolute derivative
+  let peakIdx = 0, peakVal = 0;
+  for (let k = 0; k < derivY.length; k++) { if (Math.abs(derivY[k]) > peakVal) { peakVal = Math.abs(derivY[k]); peakIdx = k; } }
+  if (peakVal < 1e-10) return null;
+
+  // Estimate FWHM from half-max width of derivative
+  let leftIdx = peakIdx, rightIdx = peakIdx;
+  while (leftIdx > 0 && Math.abs(derivY[leftIdx]) > peakVal * 0.5) leftIdx--;
+  while (rightIdx < derivY.length - 1 && Math.abs(derivY[rightIdx]) > peakVal * 0.5) rightIdx++;
+  const fwhmDeriv = Math.abs(derivT[rightIdx] - derivT[leftIdx]);
+  if (fwhmDeriv < 1e-15) return null;
+
+  const sigma = fwhmDeriv / 2.355;
+  const fwhm = 2.355 * sigma;
+  return { fwhm, sigma };
+}
+
+function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
+  const nTime = time.length;
+  if (nTime === 0 || ta.length === 0) return { TA2D: ta, irfFwhm };
+
+  const dt = nTime >= 2 ? (time[nTime - 1] - time[0]) / (nTime - 1) : 1;
+  if (irfFwhm < dt * 0.5) return { TA2D: ta, irfFwhm };
+
+  const sigma = irfFwhm / 2.355;
+  const kernel = makeGaussianKernel(time, sigma);
+  const kernelFlipped = kernel.slice().reverse();
+
+  const nIterActual = nIter || 15;
+  const result = ta.map(row => {
+    const validCount = row.filter(v => !isNaN(v)).length;
+    if (validCount < 5) return [...row];
+
+    const signal = row.map(v => isNaN(v) ? 0 : v);
+    const nanMask = row.map(v => isNaN(v));
+    let f = signal.slice();
+    let diverged = false;
+
+    for (let iter = 0; iter < nIterActual; iter++) {
+      const hf = convolve1d(f, kernel);
+      const ratio = signal.map((s, j) => {
+        if (nanMask[j]) return 1;
+        return Math.abs(hf[j]) > 1e-15 ? s / hf[j] : 1;
+      });
+      const corr = convolve1d(ratio, kernelFlipped);
+      const fNew = f.map((v, j) => v * corr[j]);
+      const maxVal = Math.max(...fNew.map(Math.abs));
+      if (maxVal > 1e10 || isNaN(maxVal) || !isFinite(maxVal)) { diverged = true; break; }
+      f = fNew;
+    }
+
+    if (diverged) return [...row];
+    return f.map((v, j) => nanMask[j] ? NaN : v);
+  });
+
+  return { TA2D: result, irfFwhm };
+}
+
+function makeGaussianKernel(time, sigma) {
+  const dt = time.length >= 2 ? (time[time.length - 1] - time[0]) / (time.length - 1) : 1;
+  let nKernel = Math.ceil(4 * sigma / dt) * 2 + 1;
+  nKernel = Math.max(3, nKernel);
+  const center = (nKernel - 1) / 2;
+  const kernel = [];
+  for (let i = 0; i < nKernel; i++) {
+    const x = (i - center) * dt;
+    kernel.push(Math.exp(-x * x / (2 * sigma * sigma)));
+  }
+  return kernel;
+}
+
+function convolve1d(signal, kernel) {
+  const n = signal.length, k = kernel.length;
+  if (n === 0 || k === 0) return Array(n).fill(0);
+  const kSum = kernel.reduce((a, b) => a + b, 0);
+  const normK = Math.abs(kSum) > 1e-15 ? kernel.map(v => v / kSum) : kernel;
+  const halfK = Math.floor(k / 2);
+  const result = Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < k; j++) {
+      const si = i + j - halfK;
+      if (si >= 0 && si < n) sum += signal[si] * normK[k - 1 - j];
+    }
+    result[i] = sum;
+  }
+  return result;
+}
+
 function makeHeatmapData(time, wl, ta, tRange) {
   const tMaskIdx = [];
   const tPlot = [];
@@ -915,7 +1216,7 @@ async function processAll() {
 
   const yieldThread = () => new Promise(r => setTimeout(r, 0));
   const totalFiles = uploadedFiles.length;
-  const stepsPerFile = 4;
+  const stepsPerFile = 5;
 
   for (let fi = 0; fi < totalFiles; fi++) {
     if (cancelProcessing) break;
@@ -1008,11 +1309,46 @@ async function processAll() {
     }
     const { TA2D: taAfter, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs } = chirpResult;
 
+    // CPM removal (optional)
+    let taFinal = taAfter;
+    const doCpm = $('doCpm').checked;
+    const cpmFitWindow = parseFloat($('cpmFitWindow').value);
+    if (doCpm) {
+      setStatus(`⏳ [${fi + 1}/${totalFiles}] CPM 去除 ${file.name}...`, 'info', base + step * 2.5);
+      await yieldThread();
+      const cpmResult = removeCpm(timeArray, wl, taAfter, cpmFitWindow, nBaseline);
+      taFinal = cpmResult.TA2D;
+    }
+
+    // IRF deconvolution (optional)
+    const doIrf = $('doIrf').checked;
+    let irfFwhmVal = parseFloat($('irfFwhm').value);
+    const irfNIter = parseInt($('irfNIter').value);
+    if (doIrf) {
+      if (irfFwhmVal <= 0 || isNaN(irfFwhmVal)) {
+        // Auto-estimate IRF
+        const est = estimateIrf(timeArray, taFinal, 10);
+        if (est) {
+          irfFwhmVal = est.fwhm;
+          console.log(`[IRF] Auto-estimated FWHM = ${irfFwhmVal.toFixed(3)} ps`);
+        } else {
+          console.warn('[IRF] Failed to estimate IRF, skipping deconvolution');
+          irfFwhmVal = 0;
+        }
+      }
+      if (irfFwhmVal > 0) {
+        setStatus(`⏳ [${fi + 1}/${totalFiles}] IRF 解卷积 ${file.name} (FWHM=${irfFwhmVal.toFixed(3)} ps)...`, 'info', base + step * 2.7);
+        await yieldThread();
+        const irfResult = deconvolveIrf(timeArray, wl, taFinal, irfFwhmVal, irfNIter);
+        taFinal = irfResult.TA2D;
+      }
+    }
+
     if (cancelProcessing) break;
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 渲染结果 ${file.name}...`, 'info', base + step * 3);
     await yieldThread();
 
-    renderResults(file.name, timeArray, wl, taBeforeChirp, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs);
+    renderResults(file.name, timeArray, wl, taBeforeChirp, taFinal, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs);
   }
   $('processBtn').disabled = false;
   $('cancelBtn').style.display = 'none';
