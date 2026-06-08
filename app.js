@@ -1296,7 +1296,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
     // Add a transparent scatter trace covering the whole plot area to capture clicks anywhere
     Plotly.addTraces(chirpEl, {
       x: [wl[0], wl[wl.length - 1]],
-      y: [Math.min(...keptT0) * 0.5, Math.max(...keptT0) * 1.5],
+      y: keptT0.length > 0 ? [Math.min(...keptT0) * 0.5, Math.max(...keptT0) * 1.5] : [-1000, 1000],
       mode: 'markers',
       marker: { size: 1, opacity: 0 },
       name: '_click_capture_',
