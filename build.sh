@@ -1,14 +1,10 @@
 #!/bin/bash
-# Build WASM, copy pkg to project root, and optionally commit & push
+# Build WASM and optionally commit & push
 set -e
 
 echo "=== Building WASM ==="
 cd "$(dirname "$0")/core"
-wasm-pack build --target web --release
-
-echo "=== Copying pkg to project root ==="
-rm -f pkg/.gitignore
-cp -r pkg/* ../pkg/
+wasm-pack build --target web --release --out-dir ../pkg
 
 echo "=== Done! pkg/ updated. ==="
 

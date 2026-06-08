@@ -1,4 +1,4 @@
-# Build WASM, copy pkg to project root, and optionally commit & push
+# Build WASM and optionally commit & push
 param(
   [switch]$Push,
   [string]$Message = "update WASM pkg"
@@ -6,11 +6,7 @@ param(
 
 Set-Location "$PSScriptRoot\core"
 Write-Host "=== Building WASM ===" -ForegroundColor Cyan
-wasm-pack build --target web --release
-
-Write-Host "=== Copying pkg to project root ===" -ForegroundColor Cyan
-Remove-Item "$PSScriptRoot\core\pkg\.gitignore" -ErrorAction SilentlyContinue
-Copy-Item "$PSScriptRoot\core\pkg\*" "$PSScriptRoot\pkg\" -Force
+wasm-pack build --target web --release --out-dir ..\pkg
 
 Write-Host "=== Done! pkg/ updated. ===" -ForegroundColor Green
 
