@@ -18,11 +18,14 @@ ta-preprocess-web/
 │   ├── src/
 │   │   ├── lib.rs          # WASM 接口导出
 │   │   ├── chirp.rs        # 啁啾校正（半高点法 + 全局优化法）
+│   │   ├── cpm.rs          # CPM 相干伪影去除
+│   │   ├── irf.rs          # IRF 解卷积（Lucy-Richardson）
 │   │   ├── baseline.rs     # 基线扣除、polyfit/polyval 工具函数
 │   │   ├── fitting.rs      # Nelder-Mead 优化、多指数拟合
 │   │   ├── ufs.rs          # UFS 文件解析
 │   │   └── csv_parser.rs   # CSV 解析
 │   └── Cargo.toml
+├── build.ps1 / build.sh    # WASM 编译脚本
 ├── .claude/                # 权限配置
 └── 朱海明..._cleaned.md     # TA 光谱综述（参考用）
 ```
@@ -30,14 +33,12 @@ ta-preprocess-web/
 ## WASM 编译与部署
 
 ```bash
-# 编译 WASM（需要 wasm32 target）
-cd core
-rustup target add wasm32-unknown-unknown
-cargo build --release --target wasm32-unknown-unknown
+# 一键编译（输出直接到根目录 pkg/）
+.\build.ps1              # PowerShell
+./build.sh               # Bash
 
-# 生成胶水文件（如需部署到 GitHub Pages 启用 WASM 加速）
-wasm-pack build --target web --release
-# 将 pkg/ 目录部署到 GitHub Pages 根目录
+# 编译并推送
+.\build.ps1 -Push -Message "update WASM"
 ```
 
 当前 GitHub Pages 上无 WASM 文件，走 JS fallback 路径。JS 与 WASM 算法逻辑保持一致。
@@ -61,8 +62,27 @@ t₀(λ) = c₀ + c₁·(1/λ²) + c₂·(1/λ⁴)
 ## 预处理流程
 
 ```
-UFS/CSV 导入 → 探针波长裁剪 → 基线扣除 → 啁啾校正 → SNR 过滤 → 可选手动选点 → 结果可视化 + 下载
+UFS/CSV 导入 → 探针波长裁剪 → 基线扣除 → 啁啾校正 → [CPM去除] → [IRF解卷积] → SNR 过滤 → 可选手动选点 → 结果可视化 + 下载
 ```
+
+CPM 去除和 IRF 解卷积为可选步骤，默认关闭，勾选后启用。
+
+## CPM 相干伪影去除
+
+CPM (Cross-Phase Modulation) 信号在 t₀ 附近表现为高斯+导数高斯形状的相干尖峰，混在真实 ΔA 信号里。
+
+- 模型：`y(t) = A·exp(-t²/(2σ²)) + B·(-t/σ²)·exp(-t²/(2σ²)) + C`
+- 使用 Nelder-Mead 拟合，然后减去 CPM 分量（高斯+导数高斯），保留基线 C
+- 默认拟合窗口 ±0.5 ps
+- 实现位置：`cpm.rs::remove_cpm` / `app.js::removeCpm`
+
+## IRF 解卷积
+
+测量信号 = 真实动力学 ⊗ IRF（高斯卷积）。解卷积恢复真实动力学。
+
+- IRF 宽度可手动输入或自动估算（从 t₀ 附近上升沿的导数拟合）
+- 使用 Lucy-Richardson 迭代法（默认 15 次），比傅里叶除法更稳定
+- 实现位置：`irf.rs::deconvolve_irf` / `app.js::deconvolveIrf`
 
 ## 支持的文件格式
 
@@ -73,5 +93,10 @@ UFS/CSV 导入 → 探针波长裁剪 → 基线扣除 → 啁啾校正 → SNR 
 ## 2026-06-09 变更
 
 - **啁啾拟合公式修复**：从 `t₀ = c₀ + c₁·λ + c₂·λ²`（无物理意义）改为 `t₀ = c₀ + c₁·(1/λ²) + c₂·(1/λ⁴)`（材料色散模型）
-- Rust（`chirp.rs`）和 JS fallback（`app.js`）同步更新
-- WASM 已重新编译（待部署 `pkg/` 后生效）
+- **零点对齐修复**：校正后 t₀ 对齐到 t=0（之前是对齐到平均 t₀）
+- **WASM 啁啾校正参数化**：之前硬编码，现在接受用户参数（搜索范围、SNR 阈值等）
+- **默认多项式阶数改为 2 阶**：λ⁻² 空间下 2 阶足够
+- **新增 CPM 相干伪影去除**：可选步骤，高斯+导数高斯模型拟合扣除
+- **新增 IRF 解卷积**：可选步骤，Lucy-Richardson 迭代法
+- **热力图共享色标**：校正前后热力图使用同一颜色范围
+- **构建脚本**：`build.ps1` / `build.sh` 一键编译+部署
