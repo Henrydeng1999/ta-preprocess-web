@@ -2190,6 +2190,94 @@ function multiExpFuncLog(params, t, nExp) {
   return y;
 }
 
+// Levenberg-Marquardt optimizer (log(tau) parameterization)
+// Refines Nelder-Mead result for better convergence
+function levenbergMarquardt(tFit, sFit, nExp, initialParams, maxIter) {
+  const nP = nExp * 2 + 1;
+  const nD = tFit.length;
+  if (nD <= nP) return null;
+
+  let params = initialParams.slice();
+  let lambda = 0.001;
+  const lambdaUp = 10.0, lambdaDown = 0.1, maxLambda = 1e12;
+
+  // Compute residuals
+  function residuals(p) {
+    return tFit.map((t, i) => multiExpFuncLog(p, t, nExp) - sFit[i]);
+  }
+
+  // Compute numerical Jacobian
+  function jacobian(p) {
+    const h = 1e-7;
+    const J = [];
+    for (let i = 0; i < nD; i++) {
+      const row = [];
+      const fBase = multiExpFuncLog(p, tFit[i], nExp);
+      for (let j = 0; j < nP; j++) {
+        const pPlus = p.slice();
+        pPlus[j] += h;
+        row.push((multiExpFuncLog(pPlus, tFit[i], nExp) - fBase) / h);
+      }
+      J.push(row);
+    }
+    return J;
+  }
+
+  let res = residuals(params);
+  let chi2 = res.reduce((s, r) => s + r * r, 0);
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    const J = jacobian(params);
+
+    // JtJ and Jtr
+    const JtJ = [];
+    const Jtr = [];
+    for (let i = 0; i < nP; i++) {
+      JtJ[i] = [];
+      Jtr[i] = 0;
+      for (let j = 0; j < nP; j++) {
+        let s = 0;
+        for (let k = 0; k < nD; k++) s += J[k][i] * J[k][j];
+        JtJ[i][j] = s;
+      }
+      for (let k = 0; k < nD; k++) Jtr[i] += J[k][i] * res[k];
+    }
+
+    // Damped: (JtJ + lambda*I) * delta = -Jtr
+    const damped = JtJ.map((row, i) => row.slice());
+    for (let i = 0; i < nP; i++) damped[i][i] += lambda;
+
+    const inv = invertMatrix(damped);
+    if (!inv) { lambda *= lambdaUp; continue; }
+
+    const delta = [];
+    for (let i = 0; i < nP; i++) {
+      let s = 0;
+      for (let j = 0; j < nP; j++) s -= inv[i][j] * Jtr[j];
+      delta.push(s);
+    }
+
+    const newParams = params.map((p, i) => p + delta[i]);
+    const newRes = residuals(newParams);
+    const newChi2 = newRes.reduce((s, r) => s + r * r, 0);
+
+    if (newChi2 < chi2) {
+      const improvement = (chi2 - newChi2) / (chi2 + 1e-30);
+      params = newParams;
+      res = newRes;
+      chi2 = newChi2;
+      if (improvement > 0.01) lambda *= lambdaDown;
+    } else {
+      lambda *= lambdaUp;
+    }
+
+    const deltaNorm = Math.sqrt(delta.reduce((s, d) => s + d * d, 0));
+    if (deltaNorm < 1e-12 || lambda > maxLambda) break;
+  }
+
+  return { params, chi2 };
+}
+
 async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const fitIdx = [];
   for (let j = 0; j < time.length; j++) {
@@ -2217,8 +2305,8 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
 
   const tauFracs = {
     1: [[0.5]],
-    2: [[0.2, 0.8], [0.15, 0.65], [0.3, 0.85]],
-    3: [[0.1, 0.4, 0.8], [0.15, 0.45, 0.75]],
+    2: [[0.2, 0.8], [0.15, 0.65], [0.3, 0.85], [0.1, 0.5]],
+    3: [[0.1, 0.4, 0.8], [0.15, 0.45, 0.75], [0.05, 0.3, 0.7], [0.2, 0.5, 0.85]],
     4: [[0.08, 0.25, 0.55, 0.85], [0.1, 0.3, 0.6, 0.9]],
     5: [[0.05, 0.2, 0.4, 0.65, 0.9], [0.08, 0.25, 0.5, 0.75, 0.95]]
   };
@@ -2233,6 +2321,7 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   let bestResult = null;
   let bestChi2 = Infinity;
 
+  // Phase 1: Nelder-Mead coarse search with multiple initial guesses
   for (const fr of fracs) {
     for (const ampFn of ampStrategies) {
       const x0 = [];
@@ -2252,7 +2341,7 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
         return ss;
       }
 
-      const result = await nelderMead(costFunc, x0, 3000);
+      const result = await nelderMead(costFunc, x0, 2000);
       if (result.fVal < bestChi2) {
         bestChi2 = result.fVal;
         bestResult = result;
@@ -2261,6 +2350,13 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   }
 
   if (!bestResult) return null;
+
+  // Phase 2: Levenberg-Marquardt refinement on the best Nelder-Mead result
+  const lmResult = levenbergMarquardt(tFit, sFit, nExp, bestResult.x, 500);
+  if (lmResult && lmResult.chi2 < bestChi2) {
+    bestResult = { x: lmResult.params, fVal: lmResult.chi2 };
+    bestChi2 = lmResult.chi2;
+  }
   const bestParams = bestResult.x;
 
   // Convert from log(tau) to tau
