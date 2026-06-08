@@ -49,16 +49,23 @@ export function baseline_subtraction(time, ta, n_wl, n_time, n_baseline) {
  * @param {Float64Array} ta
  * @param {number} n_wl
  * @param {number} n_time
+ * @param {number} search_min
+ * @param {number} search_max
+ * @param {number} poly_order
+ * @param {number} snr_threshold
+ * @param {number} n_iter
+ * @param {number} n_sigma
+ * @param {number} n_baseline
  * @returns {any}
  */
-export function chirp_correction_global(time, wl, ta, n_wl, n_time) {
+export function chirp_correction_global(time, wl, ta, n_wl, n_time, search_min, search_max, poly_order, snr_threshold, n_iter, n_sigma, n_baseline) {
     const ptr0 = passArrayF64ToWasm0(time, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF64ToWasm0(wl, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ptr2 = passArrayF64ToWasm0(ta, wasm.__wbindgen_malloc);
     const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.chirp_correction_global(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time);
+    const ret = wasm.chirp_correction_global(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time, search_min, search_max, poly_order, snr_threshold, n_iter, n_sigma, n_baseline);
     return ret;
 }
 
@@ -68,16 +75,23 @@ export function chirp_correction_global(time, wl, ta, n_wl, n_time) {
  * @param {Float64Array} ta
  * @param {number} n_wl
  * @param {number} n_time
+ * @param {number} search_min
+ * @param {number} search_max
+ * @param {number} poly_order
+ * @param {number} snr_threshold
+ * @param {number} n_iter
+ * @param {number} n_sigma
+ * @param {number} n_baseline
  * @returns {any}
  */
-export function chirp_correction_half_height(time, wl, ta, n_wl, n_time) {
+export function chirp_correction_half_height(time, wl, ta, n_wl, n_time, search_min, search_max, poly_order, snr_threshold, n_iter, n_sigma, n_baseline) {
     const ptr0 = passArrayF64ToWasm0(time, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF64ToWasm0(wl, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ptr2 = passArrayF64ToWasm0(ta, wasm.__wbindgen_malloc);
     const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.chirp_correction_half_height(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time);
+    const ret = wasm.chirp_correction_half_height(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time, search_min, search_max, poly_order, snr_threshold, n_iter, n_sigma, n_baseline);
     return ret;
 }
 
@@ -96,6 +110,47 @@ export function crop_wavelength(wl, ta, n_wl, n_time, wl_min, wl_max) {
     const ptr1 = passArrayF64ToWasm0(ta, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.crop_wavelength(ptr0, len0, ptr1, len1, n_wl, n_time, wl_min, wl_max);
+    return ret;
+}
+
+/**
+ * @param {Float64Array} time
+ * @param {Float64Array} wl
+ * @param {Float64Array} ta
+ * @param {number} n_wl
+ * @param {number} n_time
+ * @param {number} irf_fwhm
+ * @param {number} n_iter
+ * @returns {any}
+ */
+export function deconvolve_irf_wasm(time, wl, ta, n_wl, n_time, irf_fwhm, n_iter) {
+    const ptr0 = passArrayF64ToWasm0(time, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(wl, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(ta, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.deconvolve_irf_wasm(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time, irf_fwhm, n_iter);
+    return ret;
+}
+
+/**
+ * @param {Float64Array} time
+ * @param {Float64Array} wl
+ * @param {Float64Array} ta
+ * @param {number} n_wl
+ * @param {number} n_time
+ * @param {number} n_wl_avg
+ * @returns {any}
+ */
+export function estimate_irf_wasm(time, wl, ta, n_wl, n_time, n_wl_avg) {
+    const ptr0 = passArrayF64ToWasm0(time, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(wl, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(ta, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.estimate_irf_wasm(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time, n_wl_avg);
     return ret;
 }
 
@@ -185,6 +240,27 @@ export function polyval_wasm(coeffs, x) {
     var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
     return v3;
+}
+
+/**
+ * @param {Float64Array} time
+ * @param {Float64Array} wl
+ * @param {Float64Array} ta
+ * @param {number} n_wl
+ * @param {number} n_time
+ * @param {number} fit_window
+ * @param {number} n_baseline
+ * @returns {any}
+ */
+export function remove_cpm_wasm(time, wl, ta, n_wl, n_time, fit_window, n_baseline) {
+    const ptr0 = passArrayF64ToWasm0(time, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(wl, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF64ToWasm0(ta, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.remove_cpm_wasm(ptr0, len0, ptr1, len1, ptr2, len2, n_wl, n_time, fit_window, n_baseline);
+    return ret;
 }
 function __wbg_get_imports() {
     const import0 = {

@@ -911,7 +911,7 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
 }
 
 // ==================== CPM Removal ====================
-function removeCpm(time, wl, ta, fitWindow, nBaseline) {
+async function removeCpm(time, wl, ta, fitWindow, nBaseline) {
   // Find t=0 index
   let t0Idx = 0, minAbsT = Infinity;
   for (let i = 0; i < time.length; i++) {
@@ -924,9 +924,11 @@ function removeCpm(time, wl, ta, fitWindow, nBaseline) {
     if (time[j] < 0) baselineIdx.push(j);
   }
 
-  const result = ta.map(row => {
+  const result = [];
+  for (let ri = 0; ri < ta.length; ri++) {
+    const row = ta[ri];
     const allNan = row.every(v => isNaN(v));
-    if (allNan) return [...row];
+    if (allNan) { result.push([...row]); continue; }
 
     // Estimate baseline
     let blSum = 0, blCount = 0;
@@ -954,42 +956,46 @@ function removeCpm(time, wl, ta, fitWindow, nBaseline) {
         fitT.push(time[j]); fitY.push(row[j]);
       }
     }
-    if (fitT.length < 4) return [...row];
+    if (fitT.length < 4) { result.push([...row]); continue; }
 
     // CPM model: A*exp(-t²/(2σ²)) + B*(-t/σ²)*exp(-t²/(2σ²)) + C
     function cpmModel(p, t) {
-      const [a, sigma, b, c] = p;
-      if (sigma <= 0) return c;
+      const [a, logSigma, b, c] = p;
+      const sigma = Math.exp(logSigma);
       const gauss = Math.exp(-t * t / (2 * sigma * sigma));
       return a * gauss + b * (-t / (sigma * sigma)) * gauss + c;
     }
 
-    // Nelder-Mead fit
-    const x0 = [peakEst, 0.05, 0, blEst];
+    // Nelder-Mead fit with log(sigma) parameterization
+    const x0 = [peakEst, Math.log(0.05), 0, blEst];
     function cost(p) {
       let ssr = 0;
       for (let k = 0; k < fitT.length; k++) {
         const r = cpmModel(p, fitT[k]) - fitY[k];
         ssr += r * r;
       }
-      if (p[1] <= 0) ssr += 1e10;
       return ssr;
     }
-    const fitted = nelderMeadSync(cost, x0, 2000);
+    const fitted = await nelderMead(cost, x0, 1500);
+    const fittedP = fitted.x;
+    const sigmaFit = Math.exp(fittedP[1]);
 
-    if (fitted[1] <= 0 || isNaN(fitted[1]) || !isFinite(fitted[1])) return [...row];
+    if (sigmaFit <= 0 || isNaN(sigmaFit) || !isFinite(sigmaFit)) { result.push([...row]); continue; }
 
-    const [aFit, sigmaFit, bFit, cFit] = fitted;
+    const aFit = fittedP[0], bFit = fittedP[2], cFit = fittedP[3];
 
     // Subtract CPM component
-    return row.map((v, j) => {
+    result.push(row.map((v, j) => {
       if (isNaN(v)) return NaN;
       const t = time[j];
       const gauss = Math.exp(-t * t / (2 * sigmaFit * sigmaFit));
       const cpmComp = aFit * gauss + bFit * (-t / (sigmaFit * sigmaFit)) * gauss;
       return v - cpmComp;
-    });
-  });
+    }));
+
+    // Yield every 10 wavelengths to keep UI responsive
+    if (ri % 10 === 0) await new Promise(r => setTimeout(r, 0));
+  }
 
   return { TA2D: result };
 }
@@ -1095,7 +1101,7 @@ function estimateIrf(time, ta, nWlAvg) {
   return { fwhm, sigma };
 }
 
-function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
+async function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
   const nTime = time.length;
   if (nTime === 0 || ta.length === 0) return { TA2D: ta, irfFwhm };
 
@@ -1107,9 +1113,11 @@ function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
   const kernelFlipped = kernel.slice().reverse();
 
   const nIterActual = nIter || 15;
-  const result = ta.map(row => {
+  const result = [];
+  for (let ri = 0; ri < ta.length; ri++) {
+    const row = ta[ri];
     const validCount = row.filter(v => !isNaN(v)).length;
-    if (validCount < 5) return [...row];
+    if (validCount < 5) { result.push([...row]); continue; }
 
     const signal = row.map(v => isNaN(v) ? 0 : v);
     const nanMask = row.map(v => isNaN(v));
@@ -1129,9 +1137,12 @@ function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
       f = fNew;
     }
 
-    if (diverged) return [...row];
-    return f.map((v, j) => nanMask[j] ? NaN : v);
-  });
+    if (diverged) { result.push([...row]); continue; }
+    result.push(f.map((v, j) => nanMask[j] ? NaN : v));
+
+    // Yield every 10 wavelengths to keep UI responsive
+    if (ri % 10 === 0) await new Promise(r => setTimeout(r, 0));
+  }
 
   return { TA2D: result, irfFwhm };
 }
@@ -1320,7 +1331,7 @@ async function processAll() {
     if (doCpm) {
       setStatus(`⏳ [${fi + 1}/${totalFiles}] CPM 去除 ${file.name}...`, 'info', base + step * 2.5);
       await yieldThread();
-      const cpmResult = removeCpm(timeArray, wl, taAfter, cpmFitWindow, nBaseline);
+      const cpmResult = await removeCpm(timeArray, wl, taAfter, cpmFitWindow, nBaseline);
       taFinal = cpmResult.TA2D;
     }
 
@@ -1343,7 +1354,7 @@ async function processAll() {
       if (irfFwhmVal > 0) {
         setStatus(`⏳ [${fi + 1}/${totalFiles}] IRF 解卷积 ${file.name} (FWHM=${irfFwhmVal.toFixed(3)} ps)...`, 'info', base + step * 2.7);
         await yieldThread();
-        const irfResult = deconvolveIrf(timeArray, wl, taFinal, irfFwhmVal, irfNIter);
+        const irfResult = await deconvolveIrf(timeArray, wl, taFinal, irfFwhmVal, irfNIter);
         taFinal = irfResult.TA2D;
       }
     }
@@ -2167,6 +2178,18 @@ function multiExpFunc(params, t, nExp) {
   return y;
 }
 
+// Internal: log(tau) parameterized version for optimization
+function multiExpFuncLog(params, t, nExp) {
+  var y = params[params.length - 1];
+  for (var k = 0; k < nExp; k++) {
+    var amp = params[k * 2];
+    var tau = Math.exp(params[k * 2 + 1]);
+    if (t < 0) continue;
+    y += amp * Math.exp(-t / tau);
+  }
+  return y;
+}
+
 async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const fitIdx = [];
   for (let j = 0; j < time.length; j++) {
@@ -2215,18 +2238,16 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
       const x0 = [];
       for (let k = 0; k < nExp; k++) {
         x0.push(ampFn(k));
-        x0.push(Math.exp(logTMin + fr[k] * logRange));
+        // log(tau) parameterization: tau = exp(logTau), always positive
+        x0.push(logTMin + fr[k] * logRange);
       }
       x0.push(sLast * 0.5);
 
       function costFunc(params) {
         let ss = 0;
         for (let i = 0; i < tFit.length; i++) {
-          const yPred = multiExpFunc(params, tFit[i], nExp);
+          const yPred = multiExpFuncLog(params, tFit[i], nExp);
           ss += (yPred - sFit[i]) ** 2;
-        }
-        for (let k = 0; k < nExp; k++) {
-          if (params[k * 2 + 1] < 0.001) ss += 1e6;
         }
         return ss;
       }
@@ -2242,43 +2263,46 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   if (!bestResult) return null;
   const bestParams = bestResult.x;
 
+  // Convert from log(tau) to tau
+  const finalParams = [];
   for (let k = 0; k < nExp; k++) {
-    if (bestParams[k * 2 + 1] < 0) {
-      bestParams[k * 2 + 1] = Math.abs(bestParams[k * 2 + 1]);
-      bestParams[k * 2] = -bestParams[k * 2];
-    }
+    const amp = bestParams[k * 2];
+    const tau = Math.exp(bestParams[k * 2 + 1]);
+    finalParams.push(amp, tau);
   }
+  finalParams.push(bestParams[bestParams.length - 1]);
 
   const sorted = [];
   for (let k = 0; k < nExp; k++) {
-    sorted.push({ A: bestParams[k * 2], tau: bestParams[k * 2 + 1] });
+    sorted.push({ A: finalParams[k * 2], tau: finalParams[k * 2 + 1] });
   }
   sorted.sort((a, b) => a.tau - b.tau);
 
-  const finalParams = [];
+  const sortedParams = [];
   for (const item of sorted) {
-    finalParams.push(item.A, item.tau);
+    sortedParams.push(item.A, item.tau);
   }
-  finalParams.push(bestParams[bestParams.length - 1]);
+  sortedParams.push(finalParams[finalParams.length - 1]);
 
   let ssTot = 0;
   const sMeanVal = sFit.reduce((a, b) => a + b, 0) / sFit.length;
   for (let i = 0; i < sFit.length; i++) ssTot += (sFit[i] - sMeanVal) ** 2;
   const r2 = 1 - bestResult.fVal / ssTot;
 
-  const nP = finalParams.length;
+  const nP = sortedParams.length;
   const nD = tFit.length;
   const sigma2 = bestResult.fVal / (nD - nP);
 
+  // Numerical Jacobian using sortedParams (with actual tau values)
   const eps = 1e-8;
   const J = [];
   for (let i = 0; i < nD; i++) {
     const row = [];
     for (let j = 0; j < nP; j++) {
-      const pPlus = finalParams.slice();
+      const pPlus = sortedParams.slice();
       pPlus[j] += eps;
       const fPlus = multiExpFunc(pPlus, tFit[i], nExp);
-      const fOrig = multiExpFunc(finalParams, tFit[i], nExp);
+      const fOrig = multiExpFunc(sortedParams, tFit[i], nExp);
       row.push((fPlus - fOrig) / eps);
     }
     J.push(row);
@@ -2303,7 +2327,7 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
     }
   }
 
-  return { params: finalParams, r2, tFit, sFit, nExp, stdErrs };
+  return { params: sortedParams, r2, tFit, sFit, nExp, stdErrs };
 }
 
 function invertMatrix(M) {
