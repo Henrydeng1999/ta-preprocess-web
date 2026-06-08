@@ -12,6 +12,28 @@ pub struct ChirpShiftResult {
     pub ref_t0: f64,
 }
 
+pub struct ChirpOpts {
+    pub search_range: (f64, f64),
+    pub poly_order: usize,
+    pub snr_threshold: f64,
+    pub n_iter: usize,
+    pub n_sigma: f64,
+    pub n_baseline: usize,
+}
+
+impl Default for ChirpOpts {
+    fn default() -> Self {
+        ChirpOpts {
+            search_range: (-2.0, 2.0),
+            poly_order: 2,
+            snr_threshold: 3.0,
+            n_iter: 3,
+            n_sigma: 2.5,
+            n_baseline: 10,
+        }
+    }
+}
+
 pub fn find_t0_half_height(time: &[f64], ta: &[Vec<f64>], search_range: (f64, f64)) -> Vec<f64> {
     let mut t_search_mask = Vec::new();
     let mut t_search = Vec::new();
@@ -91,8 +113,108 @@ pub fn find_t0_half_height(time: &[f64], ta: &[Vec<f64>], search_range: (f64, f6
     t0_list
 }
 
+/// Compute SNR per wavelength (same logic as JS fallback)
+pub fn compute_snr_per_wl(time: &[f64], ta: &[Vec<f64>], n_baseline: usize) -> Vec<f64> {
+    let mut t0_idx = 0;
+    let mut min_abs = f64::INFINITY;
+    for (i, &t) in time.iter().enumerate() {
+        if t.abs() < min_abs {
+            min_abs = t.abs();
+            t0_idx = i;
+        }
+    }
+    let baseline_start = if t0_idx >= n_baseline { t0_idx - n_baseline } else { 0 };
+
+    let mut snr_list = Vec::with_capacity(ta.len());
+    for row in ta {
+        let mut noise_sum = 0.0;
+        let mut noise_count = 0;
+        for j in baseline_start..t0_idx {
+            if j < row.len() && !row[j].is_nan() {
+                noise_sum += row[j];
+                noise_count += 1;
+            }
+        }
+        let noise_mean = if noise_count > 0 { noise_sum / noise_count as f64 } else { 0.0 };
+        let mut noise_var_sum = 0.0;
+        for j in baseline_start..t0_idx {
+            if j < row.len() && !row[j].is_nan() {
+                noise_var_sum += (row[j] - noise_mean).powi(2);
+            }
+        }
+        let noise_std = if noise_count > 1 { (noise_var_sum / (noise_count - 1) as f64).sqrt() } else { 1e-10 };
+        let mut peak_val = 0.0;
+        for v in row {
+            if !v.is_nan() && v.abs() > peak_val {
+                peak_val = v.abs();
+            }
+        }
+        snr_list.push(if noise_std > 1e-15 { peak_val / noise_std } else { 0.0 });
+    }
+    snr_list
+}
+
+/// Sigma-clipped polyfit: iteratively remove outliers beyond n_sigma
+pub fn sigma_clip_polyfit(
+    x: &[f64],
+    y: &[f64],
+    order: usize,
+    n_iter: usize,
+    n_sigma: f64,
+) -> (Option<Vec<f64>>, Vec<usize>, Vec<usize>) {
+    let mut current_idx: Vec<usize> = (0..x.len())
+        .filter(|&i| !x[i].is_nan() && !y[i].is_nan())
+        .collect();
+
+    if current_idx.len() < order + 1 {
+        return (None, current_idx, vec![]);
+    }
+
+    let mut all_rejected: Vec<usize> = Vec::new();
+
+    for _ in 0..n_iter {
+        let cx: Vec<f64> = current_idx.iter().map(|&i| x[i]).collect();
+        let cy: Vec<f64> = current_idx.iter().map(|&i| y[i]).collect();
+        let iter_coeffs = polyfit(&cx, &cy, order);
+        let y_fit = polyval(&iter_coeffs, &cx);
+        let residuals: Vec<f64> = cy.iter().zip(y_fit.iter()).map(|(a, b)| a - b).collect();
+        let res_mean = residuals.iter().sum::<f64>() / residuals.len() as f64;
+        let res_std = {
+            let var: f64 = residuals.iter().map(|r| (r - res_mean).powi(2)).sum();
+            (var / (residuals.len().max(1) - 1).max(1) as f64).sqrt()
+        };
+
+        let mut new_idx = Vec::new();
+        let mut iter_rejected = Vec::new();
+        for (k, &idx) in current_idx.iter().enumerate() {
+            if (residuals[k] - res_mean).abs() > n_sigma * res_std {
+                iter_rejected.push(idx);
+            } else {
+                new_idx.push(idx);
+            }
+        }
+        all_rejected.extend(iter_rejected);
+        current_idx = new_idx;
+        if current_idx.len() < order + 1 {
+            break;
+        }
+    }
+
+    let coeffs = if current_idx.len() >= order + 1 {
+        let cx: Vec<f64> = current_idx.iter().map(|&i| x[i]).collect();
+        let cy: Vec<f64> = current_idx.iter().map(|&i| y[i]).collect();
+        Some(polyfit(&cx, &cy, order))
+    } else {
+        None
+    };
+
+    (coeffs, current_idx, all_rejected)
+}
+
 pub fn apply_chirp_shift(time: &[f64], wl: &[f64], ta: &[Vec<f64>], coeffs: &[f64]) -> ChirpShiftResult {
-    let t0_fitted = polyval(coeffs, wl);
+    // Use λ⁻² as x-axis for chirp (physical dispersion: t₀ ∝ λ⁻²)
+    let inv_l2: Vec<f64> = wl.iter().map(|&w| 1.0 / (w * w)).collect();
+    let t0_fitted = polyval(coeffs, &inv_l2);
     let ref_t0 = t0_fitted.iter().sum::<f64>() / t0_fitted.len() as f64;
 
     let corrected: Vec<Vec<f64>> = ta
@@ -126,19 +248,22 @@ pub fn apply_chirp_shift(time: &[f64], wl: &[f64], ta: &[Vec<f64>], coeffs: &[f6
     }
 }
 
-pub fn chirp_correction_half_height(time: &[f64], wl: &[f64], ta: &[Vec<f64>]) -> ChirpResult {
-    let t0_per_wl = find_t0_half_height(time, ta, (-2.0, 2.0));
+pub fn chirp_correction_half_height(time: &[f64], wl: &[f64], ta: &[Vec<f64>], opts: &ChirpOpts) -> ChirpResult {
+    let t0_per_wl = find_t0_half_height(time, ta, opts.search_range);
+    let snr_per_wl = compute_snr_per_wl(time, ta, opts.n_baseline);
 
+    // Filter by SNR: use λ⁻² for fitting
+    let inv_l2: Vec<f64> = wl.iter().map(|&w| 1.0 / (w * w)).collect();
     let mut valid_x = Vec::new();
     let mut valid_y = Vec::new();
-    for (i, &w) in wl.iter().enumerate() {
-        if !t0_per_wl[i].is_nan() {
-            valid_x.push(w);
+    for (i, _) in wl.iter().enumerate() {
+        if !t0_per_wl[i].is_nan() && snr_per_wl[i] >= opts.snr_threshold {
+            valid_x.push(inv_l2[i]);
             valid_y.push(t0_per_wl[i]);
         }
     }
 
-    if valid_x.len() < 3 {
+    if valid_x.len() < opts.poly_order + 1 {
         return ChirpResult {
             ta_2d: ta.to_vec(),
             coeffs: None,
@@ -146,29 +271,43 @@ pub fn chirp_correction_half_height(time: &[f64], wl: &[f64], ta: &[Vec<f64>]) -
         };
     }
 
-    let coeffs = polyfit(&valid_x, &valid_y, 2);
-    let result = apply_chirp_shift(time, wl, ta, &coeffs);
+    let (coeffs_opt, _kept, _rejected) = sigma_clip_polyfit(
+        &valid_x, &valid_y, opts.poly_order, opts.n_iter, opts.n_sigma
+    );
 
-    ChirpResult {
-        ta_2d: result.ta_2d,
-        coeffs: Some(coeffs),
-        t0_per_wl,
+    match coeffs_opt {
+        Some(coeffs) => {
+            let result = apply_chirp_shift(time, wl, ta, &coeffs);
+            ChirpResult {
+                ta_2d: result.ta_2d,
+                coeffs: Some(coeffs),
+                t0_per_wl,
+            }
+        }
+        None => ChirpResult {
+            ta_2d: ta.to_vec(),
+            coeffs: None,
+            t0_per_wl,
+        },
     }
 }
 
-pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>]) -> ChirpResult {
-    let t0_per_wl = find_t0_half_height(time, ta, (-2.0, 2.0));
+pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>], opts: &ChirpOpts) -> ChirpResult {
+    let t0_per_wl = find_t0_half_height(time, ta, opts.search_range);
+    let snr_per_wl = compute_snr_per_wl(time, ta, opts.n_baseline);
 
+    // Filter by SNR: use λ⁻² for fitting
+    let inv_l2: Vec<f64> = wl.iter().map(|&w| 1.0 / (w * w)).collect();
     let mut valid_x = Vec::new();
     let mut valid_y = Vec::new();
-    for (i, &w) in wl.iter().enumerate() {
-        if !t0_per_wl[i].is_nan() {
-            valid_x.push(w);
+    for (i, _) in wl.iter().enumerate() {
+        if !t0_per_wl[i].is_nan() && snr_per_wl[i] >= opts.snr_threshold {
+            valid_x.push(inv_l2[i]);
             valid_y.push(t0_per_wl[i]);
         }
     }
 
-    if valid_x.len() < 3 {
+    if valid_x.len() < opts.poly_order + 1 {
         return ChirpResult {
             ta_2d: ta.to_vec(),
             coeffs: None,
@@ -176,12 +315,30 @@ pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>]) -> Chi
         };
     }
 
-    let initial_coeffs = polyfit(&valid_x, &valid_y, 2);
+    let (initial_coeffs_opt, _kept, _rejected) = sigma_clip_polyfit(
+        &valid_x, &valid_y, opts.poly_order, opts.n_iter, opts.n_sigma
+    );
+
+    let initial_coeffs = match initial_coeffs_opt {
+        Some(c) => c,
+        None => {
+            return ChirpResult {
+                ta_2d: ta.to_vec(),
+                coeffs: None,
+                t0_per_wl,
+            };
+        }
+    };
 
     let n_wl = wl.len();
+    let n_coeffs = initial_coeffs.len();
 
+    // Precompute valid data per wavelength (skip SNR-filtered)
     let precomp_valid: Vec<Option<PrecompData>> = (0..n_wl)
         .map(|i| {
+            if snr_per_wl[i] < opts.snr_threshold {
+                return None;
+            }
             let row = &ta[i];
             let mut vx = Vec::new();
             let mut vy = Vec::new();
@@ -209,15 +366,17 @@ pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>]) -> Chi
     let inv_dt_step = 1.0 / dt_step;
 
     let cost_func = |coeffs: &[f64]| -> f64 {
-        let c0 = coeffs[0];
-        let c1 = coeffs[1];
-        let c2 = coeffs[2];
-
         let mut ref_t0 = 0.0;
         let dt_arr: Vec<f64> = wl
             .iter()
             .map(|&xi| {
-                let t0 = c0 + c1 * xi + c2 * xi * xi;
+                let inv_l2 = 1.0 / (xi * xi);
+                let mut t0 = 0.0;
+                let mut xi_pow = 1.0;
+                for k in 0..n_coeffs {
+                    t0 += coeffs[k] * xi_pow;
+                    xi_pow *= inv_l2;
+                }
                 ref_t0 += t0;
                 t0
             })
@@ -296,10 +455,11 @@ pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>]) -> Chi
             return 1e10;
         }
 
-        let d0 = coeffs[0] - initial_coeffs[0];
-        let d1 = coeffs[1] - initial_coeffs[1];
-        let d2 = coeffs[2] - initial_coeffs[2];
-        let reg = 0.01 * (d0 * d0 + d1 * d1 + d2 * d2) / 3.0;
+        let mut reg = 0.0;
+        for k in 0..n_coeffs {
+            reg += (coeffs[k] - initial_coeffs[k]).powi(2);
+        }
+        reg = 0.01 * reg / n_coeffs as f64;
 
         -total_sharpness / n_valid_wl as f64 + reg
     };

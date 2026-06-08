@@ -106,13 +106,25 @@ pub fn baseline_subtraction(time: &[f64], ta: &[f64], n_wl: usize, n_time: usize
 }
 
 #[wasm_bindgen]
-pub fn chirp_correction_half_height(time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize) -> JsValue {
+pub fn chirp_correction_half_height(
+    time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize,
+    search_min: f64, search_max: f64, poly_order: usize,
+    snr_threshold: f64, n_iter: usize, n_sigma: f64, n_baseline: usize,
+) -> JsValue {
     if wl.len() != n_wl || ta.len() != n_wl * n_time {
         let err = serde_json::json!({"error": format!("Dimension mismatch: wl={}, n_wl={}, ta={}, expected={}", wl.len(), n_wl, ta.len(), n_wl * n_time)});
         return serde_wasm_bindgen::to_value(&err).unwrap();
     }
     let ta_2d = flatten_to_2d(ta, n_wl, n_time);
-    let result = chirp::chirp_correction_half_height(time, wl, &ta_2d);
+    let opts = chirp::ChirpOpts {
+        search_range: (search_min, search_max),
+        poly_order,
+        snr_threshold,
+        n_iter,
+        n_sigma,
+        n_baseline,
+    };
+    let result = chirp::chirp_correction_half_height(time, wl, &ta_2d, &opts);
     let output = ChirpOutput {
         ta_2d: flatten_2d(&result.ta_2d),
         coeffs: result.coeffs,
@@ -122,13 +134,25 @@ pub fn chirp_correction_half_height(time: &[f64], wl: &[f64], ta: &[f64], n_wl: 
 }
 
 #[wasm_bindgen]
-pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize) -> JsValue {
+pub fn chirp_correction_global(
+    time: &[f64], wl: &[f64], ta: &[f64], n_wl: usize, n_time: usize,
+    search_min: f64, search_max: f64, poly_order: usize,
+    snr_threshold: f64, n_iter: usize, n_sigma: f64, n_baseline: usize,
+) -> JsValue {
     if wl.len() != n_wl || ta.len() != n_wl * n_time {
         let err = serde_json::json!({"error": format!("Dimension mismatch: wl={}, n_wl={}, ta={}, expected={}", wl.len(), n_wl, ta.len(), n_wl * n_time)});
         return serde_wasm_bindgen::to_value(&err).unwrap();
     }
     let ta_2d = flatten_to_2d(ta, n_wl, n_time);
-    let result = chirp::chirp_correction_global(time, wl, &ta_2d);
+    let opts = chirp::ChirpOpts {
+        search_range: (search_min, search_max),
+        poly_order,
+        snr_threshold,
+        n_iter,
+        n_sigma,
+        n_baseline,
+    };
+    let result = chirp::chirp_correction_global(time, wl, &ta_2d, &opts);
     let output = ChirpOutput {
         ta_2d: flatten_2d(&result.ta_2d),
         coeffs: result.coeffs,

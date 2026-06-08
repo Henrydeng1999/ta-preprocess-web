@@ -112,11 +112,12 @@ window.addEventListener('wasm-ready', function() {
     };
 
     chirpCorrectionHalfHeight = function(time, wl, ta, opts) {
-      if (opts) return _origChirpHalfHeight(time, wl, ta, opts);
       try {
         var flat = _flattenTA(ta);
         var ret = window.taWasm.chirp_correction_half_height(
-          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length
+          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+          opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+          opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
         );
         var result = _wasmChirpResult(ret, ta.length, time.length);
         if (!result) {
@@ -131,12 +132,13 @@ window.addEventListener('wasm-ready', function() {
     };
 
     chirpCorrectionGlobal = function(time, wl, ta, opts) {
-      if (opts) return _origChirpGlobal(time, wl, ta, opts);
       return _wasmAsync(function() {
         try {
           var flat = _flattenTA(ta);
           var ret = window.taWasm.chirp_correction_global(
-            new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length
+            new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+            opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+            opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
           );
           var result = _wasmChirpResult(ret, ta.length, time.length);
           if (!result) {
