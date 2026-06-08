@@ -392,6 +392,86 @@ fn levenberg_marquardt_log(
 
 // ==================== Initial Guess Strategy ====================
 
+/// Fit single exponential and return (A, log_tau, y0)
+fn fit_single_exp_initial(t: &[f64], y: &[f64]) -> Vec<f64> {
+    let t_max = t[t.len() - 1];
+    let t_min = t[0].max(0.01);
+    let log_t_min = t_min.ln();
+    let log_t_max = t_max.ln();
+    let log_range = log_t_max - log_t_min;
+
+    let y_first = y[0];
+    let y_last = y[y.len() - 1];
+    let y_range = y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+        - y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let amp_est = y_first - y_last;
+
+    // Strategy A: First/last points
+    let guess_a = vec![amp_est, log_t_min + 0.5 * log_range, y_last * 0.5];
+
+    // Strategy B: Area-based tau estimate
+    let mut area_sum = 0.0;
+    for i in 1..t.len() {
+        area_sum += (y[i] - y_last) * (t[i] - t[i - 1]);
+    }
+    let tau_from_area = if amp_est.abs() > 1e-15 {
+        (area_sum / amp_est).abs().clamp(t_min, t_max)
+    } else {
+        (t_max - t_min) * 0.3
+    };
+    let guess_b = vec![amp_est, tau_from_area.ln(), y_last * 0.5];
+
+    // Strategy C: Half-decay point
+    let half_val = (y_first + y_last) / 2.0;
+    let mut t_half = t_min + (t_max - t_min) * 0.3;
+    for i in 1..t.len() {
+        if (y[i - 1] - half_val) * (y[i] - half_val) <= 0.0 {
+            let denom = (y[i - 1] - half_val).abs() + (y[i] - half_val).abs() + 1e-30;
+            let frac = (y[i - 1] - half_val).abs() / denom;
+            t_half = t[i - 1] + frac * (t[i] - t[i - 1]);
+            break;
+        }
+    }
+    let tau_from_half = (t_half / std::f64::consts::LN_2).max(t_min);
+    let guess_c = vec![amp_est, tau_from_half.ln(), y_last * 0.5];
+
+    // Strategy D: Short tau
+    let guess_d = vec![y_range * 0.8, log_t_min + 0.3 * log_range, y_last * 0.5];
+
+    // Try all guesses, pick best
+    let guesses = vec![guess_a, guess_b, guess_c, guess_d];
+    let mut best = guesses[0].clone();
+    let mut best_chi2 = f64::INFINITY;
+
+    for x0 in &guesses {
+        let result = nelder_mead(
+            &|p: &[f64]| {
+                let mut ss = 0.0;
+                for i in 0..t.len() {
+                    let r = eval_model_log(p, t[i], 1) - y[i];
+                    ss += r * r;
+                }
+                ss
+            },
+            x0,
+            1500,
+        );
+        if result.f_val < best_chi2 {
+            best_chi2 = result.f_val;
+            best = result.x;
+        }
+    }
+
+    // LM refine
+    if let Some((params, chi2, _)) = levenberg_marquardt_log(t, y, 1, &best, 300) {
+        if chi2 < best_chi2 {
+            best = params;
+        }
+    }
+
+    best
+}
+
 fn generate_initial_guesses(
     t: &[f64],
     y: &[f64],
@@ -399,25 +479,96 @@ fn generate_initial_guesses(
 ) -> Vec<Vec<f64>> {
     let t_max = t[t.len() - 1];
     let t_min = t[0].max(0.01);
-    let y_max = y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-    let y_min = y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let y_range = y_max - y_min;
-
     let log_t_min = t_min.ln();
     let log_t_max = t_max.ln();
     let log_range = log_t_max - log_t_min;
 
-    // Estimate signal at key time points for amplitude guesses
-    let n = y.len();
-    let y_first: f64 = y[0];
-    let y_last: f64 = y[n - 1];
-    let y_quarter: f64 = y[n / 4];
-    let y_mid: f64 = y[n / 2];
-    let y_three_quarter: f64 = y[3 * n / 4];
+    let y_first = y[0];
+    let y_last = y[y.len() - 1];
+    let y_range = y.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+        - y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let amp_est = y_first - y_last;
 
     let mut all_guesses = Vec::new();
 
-    // Different tau fraction strategies
+    // ===== Progressive (Origin-style) guesses =====
+    // Step 1: Fit single exponential
+    let single_params = fit_single_exp_initial(t, y);
+
+    if n_exp == 1 {
+        all_guesses.push(single_params.clone());
+    } else {
+        // Step 2: Compute residuals from single exp fit
+        let residuals: Vec<f64> = t.iter()
+            .enumerate()
+            .map(|(i, &ti)| y[i] - eval_model_log(&single_params, ti, 1))
+            .collect();
+
+        // Fit single exp to residuals
+        let res_params = fit_single_exp_initial(t, &residuals);
+
+        // Combine for 2-exp
+        if n_exp >= 2 {
+            let a1 = single_params[0];
+            let lt1 = single_params[1];
+            let a2 = res_params[0];
+            let lt2 = res_params[1];
+            let y0 = single_params[2];
+
+            // Sort by tau
+            if lt1 <= lt2 {
+                all_guesses.push(vec![a1, lt1, a2, lt2, y0]);
+            } else {
+                all_guesses.push(vec![a2, lt2, a1, lt1, y0]);
+            }
+            // Also try swapped
+            all_guesses.push(vec![a2, lt2, a1, lt1, y0]);
+        }
+
+        // Step 3: For 3+ exp, decompose further
+        if n_exp >= 3 {
+            let residuals2: Vec<f64> = t.iter()
+                .enumerate()
+                .map(|(i, &ti)| residuals[i] - eval_model_log(&res_params, ti, 1))
+                .collect();
+            let res2_range = residuals2.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+                - residuals2.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let res2_amp = residuals2.first().copied().unwrap_or(0.0)
+                - residuals2.last().copied().unwrap_or(0.0);
+
+            let third_log_taus = [
+                log_t_min + 0.1 * log_range,
+                log_t_min + 0.3 * log_range,
+                log_t_min + 0.7 * log_range,
+            ];
+
+            for log_tau3 in &third_log_taus {
+                let a1 = single_params[0];
+                let lt1 = single_params[1];
+                let a2 = res_params[0];
+                let lt2 = res_params[1];
+                let y0 = single_params[2];
+                let a3 = if res2_amp.abs() > 1e-15 { res2_amp } else { res2_range * 0.3 };
+
+                let mut components = vec![
+                    (a1, lt1),
+                    (a2, lt2),
+                    (a3, *log_tau3),
+                ];
+                components.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                let mut x0 = Vec::new();
+                for (a, lt) in &components {
+                    x0.push(*a);
+                    x0.push(*lt);
+                }
+                x0.push(y0);
+                all_guesses.push(x0);
+            }
+        }
+    }
+
+    // ===== Grid-based guesses as backup =====
     let tau_strategies: Vec<Vec<f64>> = match n_exp {
         1 => vec![vec![0.5]],
         2 => vec![
@@ -430,7 +581,6 @@ fn generate_initial_guesses(
             vec![0.1, 0.4, 0.8],
             vec![0.15, 0.45, 0.75],
             vec![0.05, 0.3, 0.7],
-            vec![0.2, 0.5, 0.85],
         ],
         4 => vec![
             vec![0.08, 0.25, 0.55, 0.85],
@@ -449,20 +599,11 @@ fn generate_initial_guesses(
         }
     };
 
-    // Different amplitude strategies
     let amp_strategies: Vec<Box<dyn Fn(usize) -> f64>> = vec![
-        // Strategy A: Use signal values at different time points
         Box::new(|k: usize| -> f64 {
-            match k {
-                0 => y_first - y_last,
-                1 => y_quarter - y_last,
-                2 => y_mid - y_last,
-                _ => y_three_quarter - y_last,
-            }
+            if k == 0 { amp_est } else { y_range / n_exp as f64 }
         }),
-        // Strategy B: Equal share of total range
         Box::new(|_: usize| -> f64 { y_range / n_exp as f64 }),
-        // Strategy C: Decreasing amplitudes
         Box::new(|k: usize| -> f64 { y_range * (0.5_f64.powi(k as i32)) }),
     ];
 
@@ -476,7 +617,7 @@ fn generate_initial_guesses(
                 x0.push(amp);
                 x0.push(log_tau);
             }
-            x0.push(y_last * 0.5); // y0 guess
+            x0.push(y_last * 0.5);
             all_guesses.push(x0);
         }
     }

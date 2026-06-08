@@ -2293,7 +2293,6 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const sMax = Math.max(...sFit.map(Math.abs));
   const sMin = Math.min(...sFit);
   const sRange = sMax - sMin;
-  const sMean = sFit.reduce((a, b) => a + b, 0) / sFit.length;
   const sFirst = sFit[0];
   const sLast = sFit[sFit.length - 1];
 
@@ -2303,10 +2302,157 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const logTMax = Math.log(tMax);
   const logRange = logTMax - logTMin;
 
+  // ===== Progressive initial guess (Origin-style) =====
+  // Step 1: Fit single exponential to get A1, tau1, y0
+  // Step 2: Compute residuals, fit single exponential to residuals for A2, tau2
+  // Step 3: Repeat for more components
+
+  function costFunc1(params) {
+    let ss = 0;
+    for (let i = 0; i < tFit.length; i++) {
+      const yPred = multiExpFuncLog(params, tFit[i], 1);
+      ss += (yPred - sFit[i]) ** 2;
+    }
+    return ss;
+  }
+
+  // Single exponential initial guesses
+  const singleGuesses = [];
+  // Strategy A: Use first/last points
+  singleGuesses.push([sFirst - sLast, logTMin + 0.5 * logRange, sLast * 0.5]);
+  // Strategy B: Slope-based tau estimate
+  // At t=0: y ≈ A + y0, at t→∞: y → y0
+  // tau ≈ area under curve / amplitude
+  let areaSum = 0;
+  for (let i = 1; i < tFit.length; i++) {
+    areaSum += (sFit[i] - sLast) * (tFit[i] - tFit[i - 1]);
+  }
+  const ampEst = sFirst - sLast;
+  const tauFromArea = Math.abs(ampEst) > 1e-15 ? Math.abs(areaSum / ampEst) : (tMax - tMin) * 0.3;
+  const clampedTauFromArea = Math.max(tMin, Math.min(tMax, tauFromArea));
+  singleGuesses.push([ampEst, Math.log(clampedTauFromArea), sLast * 0.5]);
+  // Strategy C: Half-decay point
+  const halfVal = (sFirst + sLast) / 2;
+  let tHalf = tMin + (tMax - tMin) * 0.3;
+  for (let i = 1; i < tFit.length; i++) {
+    if ((sFit[i - 1] - halfVal) * (sFit[i] - halfVal) <= 0) {
+      const frac = Math.abs(sFit[i - 1] - halfVal) / (Math.abs(sFit[i - 1] - halfVal) + Math.abs(sFit[i] - halfVal) + 1e-30);
+      tHalf = tFit[i - 1] + frac * (tFit[i] - tFit[i - 1]);
+      break;
+    }
+  }
+  const tauFromHalf = Math.max(tMin, tHalf / Math.LN2);
+  singleGuesses.push([ampEst, Math.log(tauFromHalf), sLast * 0.5]);
+  // Strategy D: Equal spacing
+  singleGuesses.push([sRange * 0.8, logTMin + 0.3 * logRange, sLast * 0.5]);
+
+  // Fit single exponential with multiple guesses
+  let bestSingle = null;
+  let bestSingleChi2 = Infinity;
+  for (const x0 of singleGuesses) {
+    const result = await nelderMead(costFunc1, x0, 1500);
+    if (result.fVal < bestSingleChi2) {
+      bestSingleChi2 = result.fVal;
+      bestSingle = result;
+    }
+  }
+  // LM refine single
+  if (bestSingle) {
+    const lm1 = levenbergMarquardt(tFit, sFit, 1, bestSingle.x, 300);
+    if (lm1 && lm1.chi2 < bestSingleChi2) {
+      bestSingle = { x: lm1.params, fVal: lm1.chi2 };
+      bestSingleChi2 = lm1.chi2;
+    }
+  }
+
+  // Build progressive guesses for multi-exponential
+  const progressiveGuesses = [];
+
+  if (nExp === 1) {
+    // Just use the single exponential result
+    if (bestSingle) progressiveGuesses.push(bestSingle.x);
+  } else {
+    // Compute residuals from single exponential fit
+    const singleParams = bestSingle ? bestSingle.x : [ampEst, Math.log(tMax * 0.3), sLast * 0.5];
+    const residuals = tFit.map((t, i) => sFit[i] - multiExpFuncLog(singleParams, t, 1));
+
+    // Fit single exponential to residuals
+    const resFirst = residuals[0];
+    const resLast = residuals[residuals.length - 1];
+    const resAmp = resFirst - resLast;
+    const resRange = Math.max(...residuals.map(Math.abs)) - Math.min(...residuals.map(Math.abs));
+
+    function costFuncRes(params) {
+      let ss = 0;
+      for (let i = 0; i < tFit.length; i++) {
+        const yPred = multiExpFuncLog(params, tFit[i], 1);
+        ss += (yPred - residuals[i]) ** 2;
+      }
+      return ss;
+    }
+
+    const resGuesses = [
+      [resAmp, logTMin + 0.2 * logRange, resLast * 0.5],
+      [resAmp, logTMin + 0.5 * logRange, resLast * 0.5],
+      [resRange * 0.5, logTMin + 0.15 * logRange, 0],
+      [-resRange * 0.5, logTMin + 0.15 * logRange, 0],
+    ];
+
+    let bestRes = null;
+    let bestResChi2 = Infinity;
+    for (const x0 of resGuesses) {
+      const result = await nelderMead(costFuncRes, x0, 1000);
+      if (result.fVal < bestResChi2) {
+        bestResChi2 = result.fVal;
+        bestRes = result;
+      }
+    }
+
+    // Combine single + residual fit as initial guess for 2-exp
+    if (nExp >= 2 && bestSingle && bestRes) {
+      const A1 = singleParams[0], logTau1 = singleParams[1], y0 = singleParams[2];
+      const A2 = bestRes.x[0], logTau2 = bestRes.x[1];
+      // Sort by tau
+      if (logTau1 <= logTau2) {
+        progressiveGuesses.push([A1, logTau1, A2, logTau2, y0]);
+      } else {
+        progressiveGuesses.push([A2, logTau2, A1, logTau1, y0]);
+      }
+      // Also try swapping amplitudes (fast component might be in residuals)
+      progressiveGuesses.push([A2, logTau2, A1, logTau1, y0]);
+    }
+
+    // For 3+ exp: further decompose residuals
+    if (nExp >= 3 && bestRes) {
+      const resParams2 = bestRes.x;
+      const residuals2 = tFit.map((t, i) => residuals[i] - multiExpFuncLog(resParams2, t, 1));
+      const res2First = residuals2[0];
+      const res2Last = residuals2[residuals2.length - 1];
+      const res2Amp = res2First - res2Last;
+      const res2Range = Math.max(...residuals2.map(Math.abs)) - Math.min(...residuals2.map(Math.abs));
+
+      // Try fitting a third component to the double-residuals
+      const thirdLogTaus = [logTMin + 0.1 * logRange, logTMin + 0.3 * logRange, logTMin + 0.7 * logRange];
+      for (const logTau3 of thirdLogTaus) {
+        const A1 = singleParams[0], logTau1 = singleParams[1];
+        const A2 = resParams2[0], logTau2 = resParams2[1];
+        const y0 = singleParams[2];
+        // Sort by tau
+        const components = [
+          { a: A1, lt: logTau1 },
+          { a: A2, lt: logTau2 },
+          { a: res2Amp || res2Range * 0.3, lt: logTau3 }
+        ].sort((a, b) => a.lt - b.lt);
+        progressiveGuesses.push([components[0].a, components[0].lt, components[1].a, components[1].lt, components[2].a, components[2].lt, y0]);
+      }
+    }
+  }
+
+  // Also add traditional grid-based guesses as backup
   const tauFracs = {
     1: [[0.5]],
     2: [[0.2, 0.8], [0.15, 0.65], [0.3, 0.85], [0.1, 0.5]],
-    3: [[0.1, 0.4, 0.8], [0.15, 0.45, 0.75], [0.05, 0.3, 0.7], [0.2, 0.5, 0.85]],
+    3: [[0.1, 0.4, 0.8], [0.15, 0.45, 0.75], [0.05, 0.3, 0.7]],
     4: [[0.08, 0.25, 0.55, 0.85], [0.1, 0.3, 0.6, 0.9]],
     5: [[0.05, 0.2, 0.4, 0.65, 0.9], [0.08, 0.25, 0.5, 0.75, 0.95]]
   };
@@ -2318,40 +2464,48 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   ];
 
   const fracs = tauFracs[nExp] || [[0.5]];
-  let bestResult = null;
-  let bestChi2 = Infinity;
-
-  // Phase 1: Nelder-Mead coarse search with multiple initial guesses
+  const gridGuesses = [];
   for (const fr of fracs) {
     for (const ampFn of ampStrategies) {
       const x0 = [];
       for (let k = 0; k < nExp; k++) {
         x0.push(ampFn(k));
-        // log(tau) parameterization: tau = exp(logTau), always positive
         x0.push(logTMin + fr[k] * logRange);
       }
       x0.push(sLast * 0.5);
+      gridGuesses.push(x0);
+    }
+  }
 
-      function costFunc(params) {
-        let ss = 0;
-        for (let i = 0; i < tFit.length; i++) {
-          const yPred = multiExpFuncLog(params, tFit[i], nExp);
-          ss += (yPred - sFit[i]) ** 2;
-        }
-        return ss;
-      }
+  // Combine progressive + grid guesses, progressive first (higher priority)
+  const allGuesses = [...progressiveGuesses, ...gridGuesses];
 
-      const result = await nelderMead(costFunc, x0, 2000);
-      if (result.fVal < bestChi2) {
-        bestChi2 = result.fVal;
-        bestResult = result;
+  let bestResult = null;
+  let bestChi2 = Infinity;
+
+  // Phase 1: Nelder-Mead coarse search
+  for (const x0 of allGuesses) {
+    if (x0.length !== nExp * 2 + 1) continue;
+
+    function costFunc(params) {
+      let ss = 0;
+      for (let i = 0; i < tFit.length; i++) {
+        const yPred = multiExpFuncLog(params, tFit[i], nExp);
+        ss += (yPred - sFit[i]) ** 2;
       }
+      return ss;
+    }
+
+    const result = await nelderMead(costFunc, x0, 1500);
+    if (result.fVal < bestChi2) {
+      bestChi2 = result.fVal;
+      bestResult = result;
     }
   }
 
   if (!bestResult) return null;
 
-  // Phase 2: Levenberg-Marquardt refinement on the best Nelder-Mead result
+  // Phase 2: Levenberg-Marquardt refinement
   const lmResult = levenbergMarquardt(tFit, sFit, nExp, bestResult.x, 500);
   if (lmResult && lmResult.chi2 < bestChi2) {
     bestResult = { x: lmResult.params, fVal: lmResult.chi2 };
