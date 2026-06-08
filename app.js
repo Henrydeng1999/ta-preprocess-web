@@ -654,19 +654,18 @@ function applyChirpShift(time, wl, ta, coeffs) {
   // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
   const invL2 = wl.map(w => 1.0 / (w * w));
   const t0Fitted = polyval(coeffs, invL2);
-  const refT0 = t0Fitted.reduce((a, b) => a + b, 0) / t0Fitted.length;
+  // Shift each wavelength so its t0 aligns to t=0
   const corrected = ta.map((row, i) => {
-    const dt = t0Fitted[i] - refT0;
+    const dt = t0Fitted[i];
     const timeShifted = time.map(t => t - dt);
-    const validIdx = [];
     const validX = [], validY = [];
     for (let j = 0; j < row.length; j++) {
-      if (!isNaN(row[j])) { validX.push(timeShifted[j]); validY.push(row[j]); validIdx.push(j); }
+      if (!isNaN(row[j])) { validX.push(timeShifted[j]); validY.push(row[j]); }
     }
     if (validX.length < 3) return row.map(v => NaN);
     return interp1d(validX, validY, time);
   });
-  return { TA2D: corrected, t0Fitted, refT0 };
+  return { TA2D: corrected, t0Fitted, refT0: 0 };
 }
 
 async function nelderMead(costFunc, x0, maxIter = 3000) {
@@ -790,7 +789,6 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
   const invDtStep = 1.0 / dtStep;
 
   function costFunc(coeffs) {
-    let refT0 = 0;
     const dtArr = new Float64Array(nWl);
     for (let i = 0; i < nWl; i++) {
       let t0 = 0, xiPow = 1;
@@ -799,15 +797,12 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
         xiPow *= invL2[i]; // Fit in λ⁻² space: t₀ = a + b·(1/λ²) + c·(1/λ⁴)
       }
       dtArr[i] = t0;
-      refT0 += t0;
     }
-    refT0 /= nWl;
 
     let maxShift = 0;
     for (let i = 0; i < nWl; i++) {
-      const s = dtArr[i] - refT0;
+      const s = Math.abs(dtArr[i]);
       if (s > maxShift) maxShift = s;
-      else if (-s > maxShift) maxShift = -s;
     }
     if (maxShift > 5.0) return 1e10 * (1 + maxShift);
 
@@ -817,7 +812,7 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
       const pv = precompValid[i];
       if (!pv) continue;
 
-      const dt = dtArr[i] - refT0;
+      const dt = dtArr[i];
       const vx = pv.vx, vy = pv.vy, vxLen = pv.len;
       const vx0 = vx[0], vxLast = vx[vxLen - 1];
 

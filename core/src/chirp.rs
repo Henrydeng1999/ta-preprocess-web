@@ -215,13 +215,13 @@ pub fn apply_chirp_shift(time: &[f64], wl: &[f64], ta: &[Vec<f64>], coeffs: &[f6
     // Use λ⁻² as x-axis for chirp (physical dispersion: t₀ ∝ λ⁻²)
     let inv_l2: Vec<f64> = wl.iter().map(|&w| 1.0 / (w * w)).collect();
     let t0_fitted = polyval(coeffs, &inv_l2);
-    let ref_t0 = t0_fitted.iter().sum::<f64>() / t0_fitted.len() as f64;
 
+    // Shift each wavelength so its t0 aligns to t=0
     let corrected: Vec<Vec<f64>> = ta
         .iter()
         .enumerate()
         .map(|(i, row)| {
-            let dt = t0_fitted[i] - ref_t0;
+            let dt = t0_fitted[i];
             let time_shifted: Vec<f64> = time.iter().map(|&t| t - dt).collect();
 
             let mut valid_x = Vec::new();
@@ -244,7 +244,7 @@ pub fn apply_chirp_shift(time: &[f64], wl: &[f64], ta: &[Vec<f64>], coeffs: &[f6
     ChirpShiftResult {
         ta_2d: corrected,
         t0_fitted,
-        ref_t0,
+        ref_t0: 0.0,
     }
 }
 
@@ -366,7 +366,6 @@ pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>], opts: 
     let inv_dt_step = 1.0 / dt_step;
 
     let cost_func = |coeffs: &[f64]| -> f64 {
-        let mut ref_t0 = 0.0;
         let dt_arr: Vec<f64> = wl
             .iter()
             .map(|&xi| {
@@ -377,15 +376,13 @@ pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>], opts: 
                     t0 += coeffs[k] * xi_pow;
                     xi_pow *= inv_l2;
                 }
-                ref_t0 += t0;
                 t0
             })
             .collect();
-        ref_t0 /= n_wl as f64;
 
         let max_shift = dt_arr
             .iter()
-            .map(|d| (d - ref_t0).abs())
+            .map(|d| d.abs())
             .fold(0.0f64, f64::max);
         if max_shift > 5.0 {
             return 1e10 * (1.0 + max_shift);
@@ -400,7 +397,7 @@ pub fn chirp_correction_global(time: &[f64], wl: &[f64], ta: &[Vec<f64>], opts: 
                 None => continue,
             };
 
-            let dt = dt_arr[i] - ref_t0;
+            let dt = dt_arr[i];
             let vx = &pv.vx;
             let vy = &pv.vy;
             let vx_len = vx.len();
