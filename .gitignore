@@ -1,7 +1,10 @@
 # === Rust/WASM 构建产物 ===
 core/target/
+core/pkg/
 **/*.wasm
+!pkg/*.wasm
 **/*.d
+!pkg/*.d.ts
 **/*.rlib
 **/*.rmeta
 **/*.so

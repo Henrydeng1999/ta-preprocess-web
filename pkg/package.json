@@ -1,0 +1,15 @@
+{
+  "name": "ta-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "ta_wasm_bg.wasm",
+    "ta_wasm.js",
+    "ta_wasm.d.ts"
+  ],
+  "main": "ta_wasm.js",
+  "types": "ta_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
