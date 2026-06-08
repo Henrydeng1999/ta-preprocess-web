@@ -3,6 +3,8 @@ pub mod csv_parser;
 pub mod baseline;
 pub mod chirp;
 pub mod fitting;
+pub mod irf;
+pub mod cpm;
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
