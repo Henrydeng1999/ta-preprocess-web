@@ -3,6 +3,10 @@ var ufsFiles = [];
 
 var _wasmReady = false;
 
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function _flattenTA(ta) {
   var flat = [];
   for (var i = 0; i < ta.length; i++) flat.push.apply(flat, ta[i]);
@@ -301,7 +305,7 @@ function renderFileList() {
   let html = '';
   uploadedFiles.forEach((f, i) => {
     const sizeMB = (f.size / 1024 / 1024).toFixed(2);
-    html += `<div class="file-item"><span class="name">📄 ${f.name}</span><span class="size">${sizeMB} MB</span><span><button class="btn" style="padding:4px 10px;font-size:12px;background:#dc3545;color:white;" onclick="removeFile(${i})">✕</button></span></div>`;
+    html += `<div class="file-item"><span class="name">📄 ${escapeHtml(f.name)}</span><span class="size">${sizeMB} MB</span><span><button class="btn" style="padding:4px 10px;font-size:12px;background:#dc3545;color:white;" onclick="removeFile(${i})">✕</button></span></div>`;
   });
   $('fileList').innerHTML = html;
 }
@@ -321,27 +325,6 @@ function setStatus(msg, type, progress) {
   $('statusArea').innerHTML = `<div class="status status-${type}">${msg}${bar}</div>`;
 }
 
-function parseCSV(text) {
-  const lines = text.split(/\r?\n/);
-  const validLines = [];
-  for (let line of lines) {
-    const stripped = line.trim();
-    if (!stripped) continue;
-    const firstVal = stripped.split(',')[0].trim();
-    if (isNaN(parseFloat(firstVal))) break;
-    validLines.push(stripped.split(',').map(v => v.trim() === '' ? NaN : parseFloat(v)));
-  }
-  const nRows = validLines.length;
-  const nCols = validLines[0].length;
-  const timeArray = validLines[0].slice(1);
-  const wavelengthArray = [];
-  const TA2D = [];
-  for (let i = 1; i < nRows; i++) {
-    wavelengthArray.push(validLines[i][0]);
-    TA2D.push(validLines[i].slice(1));
-  }
-  return { timeArray, wavelengthArray, TA2D };
-}
 
 function cropWavelength(wl, ta, wlMin, wlMax) {
   const idx = [];
@@ -641,17 +624,21 @@ async function processAll() {
       const text = await new Promise(resolve => {
         const reader = new FileReader();
         reader.onload = e => resolve(e.target.result);
-        reader.readAsText(file, 'latin-1');
+        reader.readAsText(file, 'utf-8');
       });
 
       setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${file.name}...`, 'info', base + step * 1);
       await yieldThread();
       if (cancelProcessing) break;
 
-      const parsed = parseCSV(text);
-      timeArray = parsed.timeArray;
-      wavelengthArray = parsed.wavelengthArray;
-      TA2D = parsed.TA2D;
+      const parsed = window.taWasm.parse_csv_wasm(text);
+      if (!parsed || !parsed.time_array || parsed.time_array.length === 0) {
+        setStatus(`❌ ${escapeHtml(file.name)}: CSV 解析失败或文件为空`, 'error');
+        continue;
+      }
+      timeArray = Array.from(parsed.time_array);
+      wavelengthArray = Array.from(parsed.wavelength_array);
+      TA2D = Array.from(parsed.ta_2d).map(row => Array.from(row));
     }
     const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
     // Show pre-chirp heatmap with a quick per-wavelength baseline subtract for display only
@@ -732,7 +719,7 @@ async function processAll() {
 }
 
 function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs) {
-  const baseName = fileName.replace('.csv', '').replace(/ /g, '_');
+  const baseName = fileName.replace(/[^a-zA-Z0-9]/g, '_');
   const divId = `result_${baseName}`;
   const methodName = chirpMethod === 'global' ? '全局优化法' : chirpMethod === 'manual' ? '手动选点法' : '半高点法';
 
@@ -756,7 +743,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   const medianDt = timeDiffs.length > 0 ? timeDiffs[Math.floor(timeDiffs.length / 2)] : 0.5;
 
   let html = `<div class="card" id="${divId}">
-    <h2>📄 ${fileName}</h2>
+    <h2>📄 ${escapeHtml(fileName)}</h2>
     <p style="font-size:13px;color:#888;">波长: ${wl[0].toFixed(1)} ~ ${wl[wl.length-1].toFixed(1)} nm | 时间: ${time[0].toFixed(3)} ~ ${time[time.length-1].toFixed(3)} ps | 数据: ${wl.length}×${time.length}</p>
     <div class="tabs">
       <div class="tab active" onclick="switchTab(this, '${divId}', 'tabViz')">数据可视化</div>
