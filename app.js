@@ -567,13 +567,15 @@ async function processAll() {
   const totalFiles = uploadedFiles.length;
   const stepsPerFile = 5;
 
+  try {
   for (let fi = 0; fi < totalFiles; fi++) {
     if (cancelProcessing) break;
     const file = uploadedFiles[fi];
     const base = (fi / totalFiles) * 100;
     const step = (1 / totalFiles / stepsPerFile) * 100;
 
-    setStatus(`⏳ [${fi + 1}/${totalFiles}] 读取 ${file.name}...`, 'info', base + step * 0);
+    try {
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 读取 ${escapeHtml(file.name)}...`, 'info', base + step * 0);
     await yieldThread();
     if (cancelProcessing) break;
 
@@ -581,42 +583,22 @@ async function processAll() {
     const isUfs = ufsFiles.includes(file.name);
 
     if (isUfs) {
-      // Read full UFS file and parse directly into processing pipeline
-      let arrayBuffer;
-      try {
-        arrayBuffer = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = e => resolve(e.target.result);
-          reader.onerror = () => reject(new Error('文件读取失败，请确认以 HTTP 方式打开页面（非 file://）'));
-          reader.readAsArrayBuffer(file);
-        });
-      } catch (err) {
-        setStatus(`❌ ${err.message}`, 'error');
-        $('processBtn').disabled = false;
-        $('cancelBtn').style.display = 'none';
-        return;
-      }
+      const arrayBuffer = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = () => reject(new Error('文件读取失败，请确认以 HTTP 方式打开页面（非 file://）'));
+        reader.readAsArrayBuffer(file);
+      });
 
       if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        setStatus('❌ 文件内容为空或读取失败', 'error');
-        $('processBtn').disabled = false;
-        $('cancelBtn').style.display = 'none';
-        return;
+        throw new Error('文件内容为空或读取失败');
       }
 
-      setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 UFS ${file.name}...`, 'info', base + step * 1);
+      setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 UFS ${escapeHtml(file.name)}...`, 'info', base + step * 1);
       await yieldThread();
       if (cancelProcessing) break;
 
-      let ufsData;
-      try {
-        ufsData = parseUfsFile(arrayBuffer);
-      } catch (err) {
-        setStatus(`❌ UFS 解析失败: ${err.message}`, 'error');
-        $('processBtn').disabled = false;
-        $('cancelBtn').style.display = 'none';
-        return;
-      }
+      const ufsData = parseUfsFile(arrayBuffer);
       timeArray = ufsData.times;
       wavelengthArray = ufsData.wavelengths;
       TA2D = ufsData.intensity;
@@ -627,29 +609,26 @@ async function processAll() {
         reader.readAsText(file, 'utf-8');
       });
 
-      setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${file.name}...`, 'info', base + step * 1);
+      setStatus(`⏳ [${fi + 1}/${totalFiles}] 解析 ${escapeHtml(file.name)}...`, 'info', base + step * 1);
       await yieldThread();
       if (cancelProcessing) break;
 
       const parsed = window.taWasm.parse_csv_wasm(text);
       if (!parsed || !parsed.time_array || parsed.time_array.length === 0) {
-        setStatus(`❌ ${escapeHtml(file.name)}: CSV 解析失败或文件为空`, 'error');
-        continue;
+        throw new Error('CSV 解析失败或文件为空');
       }
       timeArray = Array.from(parsed.time_array);
       wavelengthArray = Array.from(parsed.wavelength_array);
       TA2D = Array.from(parsed.ta_2d).map(row => Array.from(row));
     }
+
     const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
-    // Show pre-chirp heatmap with a quick per-wavelength baseline subtract for display only
     const taBeforeChirp = baselineSubtraction(timeArray, taCropped, nBaseline);
 
-    setStatus(`⏳ [${fi + 1}/${totalFiles}] 啁啾校正 ${file.name}（可能需要数秒）...`, 'info', base + step * 2);
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 啁啾校正 ${escapeHtml(file.name)}（可能需要数秒）...`, 'info', base + step * 2);
     await yieldThread();
     if (cancelProcessing) break;
 
-    // Chirp correction on raw (non-baseline-subtracted) data so per-wavelength t0 detection
-    // is not confused by an incorrect global baseline window
     let chirpResult;
     if (chirpMethod === 'global') {
       chirpResult = await chirpCorrectionGlobal(timeArray, wl, taCropped, chirpOpts);
@@ -659,43 +638,32 @@ async function processAll() {
     } else {
       chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taCropped, chirpOpts);
     }
-    if (chirpResult && typeof chirpResult.then === 'function') {
-      chirpResult = await chirpResult;
-    }
+    if (chirpResult && typeof chirpResult.then === 'function') chirpResult = await chirpResult;
+
     const { TA2D: taChirped, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs } = chirpResult;
-    // Baseline subtraction AFTER chirp correction: all wavelengths now share the same t0,
-    // so the pre-t0 window is clean for every wavelength
     const taAfter = baselineSubtraction(timeArray, taChirped, nBaseline);
 
-    // CPM removal (optional)
     let taFinal = taAfter;
     const doCpm = $('doCpm').checked;
     const cpmFitWindow = parseFloat($('cpmFitWindow').value);
     if (doCpm) {
-      setStatus(`⏳ [${fi + 1}/${totalFiles}] CPM 去除 ${file.name}...`, 'info', base + step * 2.5);
+      setStatus(`⏳ [${fi + 1}/${totalFiles}] CPM 去除 ${escapeHtml(file.name)}...`, 'info', base + step * 2.5);
       await yieldThread();
       const cpmResult = await removeCpm(timeArray, wl, taAfter, cpmFitWindow, nBaseline);
       taFinal = cpmResult.TA2D;
     }
 
-    // IRF deconvolution (optional)
     const doIrf = $('doIrf').checked;
     let irfFwhmVal = parseFloat($('irfFwhm').value);
     const irfNIter = parseInt($('irfNIter').value);
     if (doIrf) {
       if (irfFwhmVal <= 0 || isNaN(irfFwhmVal)) {
-        // Auto-estimate IRF
         const est = estimateIrf(timeArray, taFinal, 10);
-        if (est) {
-          irfFwhmVal = est.fwhm;
-          // irfFwhmVal set to auto-estimated value
-        } else {
-          console.warn('[IRF] Failed to estimate IRF, skipping deconvolution');
-          irfFwhmVal = 0;
-        }
+        irfFwhmVal = est ? est.fwhm : 0;
+        if (!est) console.warn('[IRF] 自动估算失败，跳过解卷积');
       }
       if (irfFwhmVal > 0) {
-        setStatus(`⏳ [${fi + 1}/${totalFiles}] IRF 解卷积 ${file.name} (FWHM=${irfFwhmVal.toFixed(3)} ps)...`, 'info', base + step * 2.7);
+        setStatus(`⏳ [${fi + 1}/${totalFiles}] IRF 解卷积 ${escapeHtml(file.name)} (FWHM=${irfFwhmVal.toFixed(3)} ps)...`, 'info', base + step * 2.7);
         await yieldThread();
         const irfResult = await deconvolveIrf(timeArray, wl, taFinal, irfFwhmVal, irfNIter);
         taFinal = irfResult.TA2D;
@@ -703,18 +671,29 @@ async function processAll() {
     }
 
     if (cancelProcessing) break;
-    setStatus(`⏳ [${fi + 1}/${totalFiles}] 渲染结果 ${file.name}...`, 'info', base + step * 3);
+    setStatus(`⏳ [${fi + 1}/${totalFiles}] 渲染结果 ${escapeHtml(file.name)}...`, 'info', base + step * 3);
     await yieldThread();
 
     renderResults(file.name, timeArray, wl, taBeforeChirp, taFinal, coeffs, t0PerWl, chirpMethod, tViewMin, tViewMax, probeWavelengths, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs);
+
+    } catch(e) {
+      if (e instanceof WebAssembly.RuntimeError) {
+        _wasmReady = false;
+        setStatus(`❌ WASM 运行时崩溃，请刷新页面重试（${e.message}）`, 'error');
+        break;
+      }
+      setStatus(`❌ [${fi + 1}/${totalFiles}] ${escapeHtml(file.name)} 处理失败：${escapeHtml(e.message)}`, 'error');
+    }
   }
-  $('processBtn').disabled = false;
-  $('cancelBtn').style.display = 'none';
-  if (cancelProcessing) {
-    setStatus('⏹ 处理已取消', 'error');
-    cancelProcessing = false;
-  } else {
-    setStatus('✅ 全部处理完成!', 'success', 100);
+  } finally {
+    $('processBtn').disabled = false;
+    $('cancelBtn').style.display = 'none';
+    if (cancelProcessing) {
+      setStatus('⏹ 处理已取消', 'error');
+      cancelProcessing = false;
+    } else if (_wasmReady) {
+      setStatus('✅ 全部处理完成!', 'success', 100);
+    }
   }
 }
 
@@ -1507,11 +1486,19 @@ function applyManualChirp(baseName, divId) {
 }
 
 async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
-  var r = window.taWasm.fit_multi_exp(
-    new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
-  );
-  if (!r) return null;
-  return { params: Array.from(r.params), stdErrs: Array.from(r.std_errs), r2: r.r2, t_fit: Array.from(r.t_fit), y_fit: Array.from(r.y_fit) };
+  try {
+    var r = window.taWasm.fit_multi_exp(
+      new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
+    );
+    if (!r) return null;
+    return { params: Array.from(r.params), stdErrs: Array.from(r.std_errs), r2: r.r2, t_fit: Array.from(r.t_fit), y_fit: Array.from(r.y_fit) };
+  } catch(e) {
+    if (e instanceof WebAssembly.RuntimeError) {
+      _wasmReady = false;
+      throw new Error('WASM 运行时崩溃，请刷新页面重试（' + e.message + '）');
+    }
+    throw e;
+  }
 }
 
 function updateFitTimeScale(divId) {
@@ -1554,6 +1541,7 @@ async function doKineticFit(baseName, divId) {
   let resultHtml = '';
   const fitResultsStore = [];
 
+  try {
   for (let pi = 0; pi < wavelengths.length; pi++) {
     const pw = wavelengths[pi];
     let idxWl = 0;
@@ -1581,9 +1569,16 @@ async function doKineticFit(baseName, divId) {
       marker: { color, size: 5 }
     });
 
-    const fitResult = await fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
+    let fitResult;
+    try {
+      fitResult = await fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
+    } catch(e) {
+      resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl.toFixed(1)}nm: ❌ ${escapeHtml(e.message)}</div>`;
+      if (!_wasmReady) break;
+      continue;
+    }
     if (!fitResult) {
-      resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl}nm: 数据点不足，无法拟合</div>`;
+      resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl.toFixed(1)}nm: 数据点不足，无法拟合</div>`;
       continue;
     }
 
@@ -1643,18 +1638,23 @@ async function doKineticFit(baseName, divId) {
 
     fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2, tData: tPlot, yData: sigPlot, tFit: tFine, yFit: yFine });
   }
+  } catch(e) {
+    resultHtml += `<div class="status status-error">❌ 拟合中断：${escapeHtml(e.message)}</div>`;
+  } finally {
+    if (fitBtn) fitBtn.disabled = false;
+  }
 
-  Plotly.newPlot($(`${divId}_fitPlot`), traces, {
-    xaxis: { title: '时间 (ps)', type: timeScale },
-    yaxis: { title: 'ΔA (mOD)' },
-    title: `${nExp}指数拟合`,
-    margin: { l: 60, r: 20, t: 40, b: 50 },
-    shapes: timeScale === 'linear' ? [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }] : [],
-    legend: { font: { size: 10 } }
-  }, { responsive: true });
+  if (traces.length > 0) {
+    Plotly.newPlot($(`${divId}_fitPlot`), traces, {
+      xaxis: { title: '时间 (ps)', type: timeScale },
+      yaxis: { title: 'ΔA (mOD)' },
+      title: `${nExp}指数拟合`,
+      margin: { l: 60, r: 20, t: 40, b: 50 },
+      shapes: timeScale === 'linear' ? [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }] : [],
+      legend: { font: { size: 10 } }
+    }, { responsive: true });
+  }
 
   window[`fitResults_${baseName}`] = fitResultsStore;
-
-  if (fitBtn) fitBtn.disabled = false;
   $(`${divId}_fitResult`).innerHTML = resultHtml || '<div class="status status-error">所有波长均无法拟合</div>';
 }
