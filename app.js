@@ -639,7 +639,8 @@ function sigmaClipPolyfit(x, y, order, nIter, nSigma) {
 function interp1d(xData, yData, xNew) {
   return xNew.map(xn => {
     if (isNaN(xn)) return NaN;
-    if (xn < xData[0] || xn > xData[xData.length - 1]) return NaN;
+    if (xn <= xData[0]) return yData[0];
+    if (xn >= xData[xData.length - 1]) return yData[yData.length - 1];
     let lo = 0, hi = xData.length - 1;
     while (hi - lo > 1) {
       const mid = Math.floor((lo + hi) / 2);
@@ -980,7 +981,7 @@ async function removeCpm(time, wl, ta, fitWindow, nBaseline) {
     const fittedP = fitted.x;
     const sigmaFit = Math.exp(fittedP[1]);
 
-    if (sigmaFit <= 0 || isNaN(sigmaFit) || !isFinite(sigmaFit)) { result.push([...row]); continue; }
+    if (sigmaFit <= 0 || isNaN(sigmaFit) || !isFinite(sigmaFit) || sigmaFit > fitWindow * 5) { result.push([...row]); continue; }
 
     const aFit = fittedP[0], bFit = fittedP[2], cFit = fittedP[3];
 
@@ -1303,26 +1304,31 @@ async function processAll() {
       TA2D = parsed.TA2D;
     }
     const { wavelengthArray: wl, TA2D: taCropped } = cropWavelength(wavelengthArray, TA2D, wlMin, wlMax);
-    const taBaseline = baselineSubtraction(timeArray, taCropped, nBaseline);
-    const taBeforeChirp = taBaseline.map(r => [...r]);
+    // Show pre-chirp heatmap with a quick per-wavelength baseline subtract for display only
+    const taBeforeChirp = baselineSubtraction(timeArray, taCropped, nBaseline);
 
     setStatus(`⏳ [${fi + 1}/${totalFiles}] 啁啾校正 ${file.name}（可能需要数秒）...`, 'info', base + step * 2);
     await yieldThread();
     if (cancelProcessing) break;
 
+    // Chirp correction on raw (non-baseline-subtracted) data so per-wavelength t0 detection
+    // is not confused by an incorrect global baseline window
     let chirpResult;
     if (chirpMethod === 'global') {
-      chirpResult = await chirpCorrectionGlobal(timeArray, wl, taBaseline, chirpOpts);
+      chirpResult = await chirpCorrectionGlobal(timeArray, wl, taCropped, chirpOpts);
     } else if (chirpMethod === 'manual') {
-      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline, chirpOpts);
-      chirpResult = { TA2D: taBaseline, coeffs: null, t0PerWl: chirpResult.t0PerWl, snrPerWl: chirpResult.snrPerWl, snrFilteredOut: chirpResult.snrFilteredOut, sigmaClippedOut: chirpResult.sigmaClippedOut };
+      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taCropped, chirpOpts);
+      chirpResult = { TA2D: taCropped, coeffs: null, t0PerWl: chirpResult.t0PerWl, snrPerWl: chirpResult.snrPerWl, snrFilteredOut: chirpResult.snrFilteredOut, sigmaClippedOut: chirpResult.sigmaClippedOut };
     } else {
-      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taBaseline, chirpOpts);
+      chirpResult = chirpCorrectionHalfHeight(timeArray, wl, taCropped, chirpOpts);
     }
     if (chirpResult && typeof chirpResult.then === 'function') {
       chirpResult = await chirpResult;
     }
-    const { TA2D: taAfter, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs } = chirpResult;
+    const { TA2D: taChirped, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs } = chirpResult;
+    // Baseline subtraction AFTER chirp correction: all wavelengths now share the same t0,
+    // so the pre-t0 window is clean for every wavelength
+    const taAfter = baselineSubtraction(timeArray, taChirped, nBaseline);
 
     // CPM removal (optional)
     let taFinal = taAfter;
@@ -1345,7 +1351,7 @@ async function processAll() {
         const est = estimateIrf(timeArray, taFinal, 10);
         if (est) {
           irfFwhmVal = est.fwhm;
-          console.log(`[IRF] Auto-estimated FWHM = ${irfFwhmVal.toFixed(3)} ps`);
+          // irfFwhmVal set to auto-estimated value
         } else {
           console.warn('[IRF] Failed to estimate IRF, skipping deconvolution');
           irfFwhmVal = 0;
@@ -2380,7 +2386,7 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
     const resFirst = residuals[0];
     const resLast = residuals[residuals.length - 1];
     const resAmp = resFirst - resLast;
-    const resRange = Math.max(...residuals.map(Math.abs)) - Math.min(...residuals.map(Math.abs));
+    const resRange = Math.max(...residuals) - Math.min(...residuals);
 
     function costFuncRes(params) {
       let ss = 0;
@@ -2429,14 +2435,14 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
       const res2First = residuals2[0];
       const res2Last = residuals2[residuals2.length - 1];
       const res2Amp = res2First - res2Last;
-      const res2Range = Math.max(...residuals2.map(Math.abs)) - Math.min(...residuals2.map(Math.abs));
+      const res2Range = Math.max(...residuals2) - Math.min(...residuals2);
 
       // Try fitting a third component to the double-residuals
       const thirdLogTaus = [logTMin + 0.1 * logRange, logTMin + 0.3 * logRange, logTMin + 0.7 * logRange];
       for (const logTau3 of thirdLogTaus) {
         const A1 = singleParams[0], logTau1 = singleParams[1];
         const A2 = resParams2[0], logTau2 = resParams2[1];
-        const y0 = singleParams[2];
+        const y0 = singleParams[2] + resParams2[2];
         // Sort by tau
         const components = [
           { a: A1, lt: logTau1 },
@@ -2484,17 +2490,18 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   let bestChi2 = Infinity;
 
   // Phase 1: Nelder-Mead coarse search
+  const costFunc = (params) => {
+    let ss = 0;
+    for (let i = 0; i < tFit.length; i++) {
+      const yPred = multiExpFuncLog(params, tFit[i], nExp);
+      ss += (yPred - sFit[i]) ** 2;
+    }
+    return ss;
+  };
+
   for (const x0 of allGuesses) {
     if (x0.length !== nExp * 2 + 1) continue;
-
-    function costFunc(params) {
-      let ss = 0;
-      for (let i = 0; i < tFit.length; i++) {
-        const yPred = multiExpFuncLog(params, tFit[i], nExp);
-        ss += (yPred - sFit[i]) ** 2;
-      }
-      return ss;
-    }
+    if (cancelProcessing) break;
 
     const result = await nelderMead(costFunc, x0, 1500);
     if (result.fVal < bestChi2) {
@@ -2544,11 +2551,11 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   const sigma2 = bestResult.fVal / (nD - nP);
 
   // Numerical Jacobian using sortedParams (with actual tau values)
-  const eps = 1e-8;
   const J = [];
   for (let i = 0; i < nD; i++) {
     const row = [];
     for (let j = 0; j < nP; j++) {
+      const eps = Math.abs(sortedParams[j]) * 1e-6 + 1e-10;
       const pPlus = sortedParams.slice();
       pPlus[j] += eps;
       const fPlus = multiExpFunc(pPlus, tFit[i], nExp);

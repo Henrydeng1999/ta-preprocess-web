@@ -156,8 +156,14 @@ pub fn interp1d(x_data: &[f64], y_data: &[f64], x_new: &[f64]) -> Vec<f64> {
     x_new
         .iter()
         .map(|&xn| {
-            if xn.is_nan() || xn < x_data[0] || xn > *x_data.last().unwrap() {
+            if xn.is_nan() {
                 return f64::NAN;
+            }
+            if xn <= x_data[0] {
+                return y_data[0];
+            }
+            if xn >= *x_data.last().unwrap() {
+                return *y_data.last().unwrap();
             }
             let mut lo = 0usize;
             let mut hi = x_data.len() - 1;
