@@ -1516,12 +1516,12 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
 
 function updateFitTimeScale(divId) {
   const plotEl = $(`${divId}_fitPlot`);
-  if (!plotEl || !plotEl.data || plotEl.data.length === 0) return;
+  if (!plotEl) return;
   const scale = $(`${divId}_fitTimeScale`).value;
   const shapes = scale === 'linear'
     ? [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }]
     : [];
-  Plotly.relayout(plotEl, { 'xaxis.type': scale, shapes });
+  try { Plotly.relayout(plotEl, { 'xaxis.type': scale, shapes }); } catch(e) {}
 }
 
 async function doKineticFit(baseName, divId) {
