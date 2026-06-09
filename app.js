@@ -426,12 +426,14 @@ function chirpCorrectionHalfHeight(time, wl, ta, opts) {
 
 async function chirpCorrectionGlobal(time, wl, ta, opts) {
   var flat = _flattenTA(ta);
-  var ret = await new Promise(resolve => setTimeout(() => {
-    resolve(window.taWasm.chirp_correction_global(
-      new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-      opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
-      opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
-    ));
+  var ret = await new Promise((resolve, reject) => setTimeout(() => {
+    try {
+      resolve(window.taWasm.chirp_correction_global(
+        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+        opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+        opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
+      ));
+    } catch(e) { reject(e); }
   }, 0));
   return _wasmChirpResult(ret, ta.length, time.length) ||
     { TA2D: ta, coeffs: null, t0PerWl: new Array(ta.length).fill(NaN), snrPerWl: new Array(ta.length).fill(0), snrFilteredOut: new Array(ta.length).fill(true), sigmaClippedOut: new Array(ta.length).fill(false) };
@@ -1394,6 +1396,7 @@ function clearManualPoints(divId) {
 function applyManualChirp(baseName, divId) {
   const md = window._manualChirpData?.[divId];
   if (!md || md.points.length < 3) return;
+  try {
 
   const pts = md.points;
   const fitOrder = parseInt($('manualFitOrder')?.value || 3);
@@ -1483,6 +1486,11 @@ function applyManualChirp(baseName, divId) {
   // Visual feedback
   const panel = $(`${divId}_manualPanel`);
   if (panel) panel.style.borderColor = '#0f0';
+  } catch(e) {
+    const infoEl = $(`${divId}_info`);
+    if (infoEl) infoEl.innerHTML = `<span style="color:#dc3545">❌ 手动校正失败：${escapeHtml(e.message)}</span>`;
+    console.error('[applyManualChirp]', e);
+  }
 }
 
 async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
