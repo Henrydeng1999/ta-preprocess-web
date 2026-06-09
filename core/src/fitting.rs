@@ -604,6 +604,48 @@ fn generate_initial_guesses(
 
 // ==================== Multi-Exponential Fitting ====================
 
+/// Mixed linear-log time grid for fit curve display.
+/// Negative times get linear spacing; positive times get log spacing so
+/// early-time dynamics (first few ps) are adequately sampled even when
+/// the fit window extends to thousands of ps.
+fn make_fit_tgrid(t_min: f64, t_max: f64, n: usize) -> Vec<f64> {
+    if n == 0 || t_max <= t_min {
+        return vec![];
+    }
+    if t_max <= 0.0 {
+        return linspace(t_min, t_max, n);
+    }
+    if t_min < 0.0 {
+        // Allocate points proportional to the linear span of each segment.
+        let total = t_max - t_min;
+        let n_neg = ((-t_min / total * n as f64).round() as usize).max(3).min(n - 3);
+        let n_pos = n - n_neg;
+        let mut pts = linspace(t_min, 0.0, n_neg);
+        // Log grid for positive segment: start near 0, end at t_max.
+        let t_lo = (t_max / (n_pos as f64 * 100.0)).max(1e-3);
+        let (log_lo, log_hi) = (t_lo.ln(), t_max.ln());
+        if log_hi > log_lo {
+            pts.extend((0..n_pos).map(|i| {
+                (log_lo + (log_hi - log_lo) * i as f64 / (n_pos - 1).max(1) as f64).exp()
+            }));
+        } else {
+            pts.extend(linspace(t_lo, t_max, n_pos));
+        }
+        pts
+    } else {
+        // Entirely positive: purely log-spaced.
+        let t_lo = if t_min > 0.0 { t_min } else { (t_max / (n as f64 * 100.0)).max(1e-3) };
+        let (log_lo, log_hi) = (t_lo.ln(), t_max.ln());
+        if log_hi > log_lo {
+            (0..n).map(|i| {
+                (log_lo + (log_hi - log_lo) * i as f64 / (n - 1).max(1) as f64).exp()
+            }).collect()
+        } else {
+            linspace(t_min, t_max, n)
+        }
+    }
+}
+
 pub fn fit_multi_exp(
     time: &[f64],
     signal: &[f64],
@@ -707,7 +749,7 @@ pub fn fit_multi_exp(
     };
 
     // Compute fit curve using actual tau model (NOT log model!)
-    let t_fine = linspace(t_fit_min, t_fit_max, 500);
+    let t_fine = make_fit_tgrid(t_fit_min, t_fit_max, 500);
     let y_fine: Vec<f64> = t_fine
         .iter()
         .map(|&t| eval_model(&final_params, t, n_exp))
