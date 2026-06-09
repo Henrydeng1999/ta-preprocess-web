@@ -647,6 +647,7 @@ pub fn fit_multi_exp(
 
     // Progressive guesses: NM coarse search → LM refinement
     for x0 in &progressive {
+        if x0.len() != n_p { continue; }
         let nm = nelder_mead(&cost_fn, x0, 1000);
         if let Some((params, chi2, _)) = levenberg_marquardt_log(&t_fit, &s_fit, n_exp, &nm.x, 300) {
             if chi2 < best_chi2 {
@@ -658,6 +659,7 @@ pub fn fit_multi_exp(
 
     // Grid guesses: lighter NM → LM (fallback)
     for x0 in &grid {
+        if x0.len() != n_p { continue; }
         let nm = nelder_mead(&cost_fn, x0, 400);
         if let Some((params, chi2, _)) = levenberg_marquardt_log(&t_fit, &s_fit, n_exp, &nm.x, 200) {
             if chi2 < best_chi2 {
