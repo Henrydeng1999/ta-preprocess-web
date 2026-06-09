@@ -1531,6 +1531,10 @@ async function doKineticFit(baseName, divId) {
     return;
   }
 
+  const fitResultDiv = $(`${divId}_fitResult`);
+  const fitBtn = fitResultDiv.closest('.tab-content')?.querySelector('.btn-primary');
+  if (fitBtn) fitBtn.disabled = true;
+
   const time = data.timeArray;
   const wl = data.wavelengthArray;
   const ta = data.TA2D;
@@ -1549,6 +1553,9 @@ async function doKineticFit(baseName, divId) {
     }
     const actualWl = wl[idxWl];
     const signal = ta[idxWl];
+
+    fitResultDiv.innerHTML = `<div class="status status-info">⏳ 拟合中 (${pi + 1}/${wavelengths.length})：${actualWl.toFixed(1)} nm，${nExp} 指数…</div>`;
+    await new Promise(r => setTimeout(r, 0));
 
     const tMaskIdx = [];
     const tPlot = [];
@@ -1638,5 +1645,6 @@ async function doKineticFit(baseName, divId) {
 
   window[`fitResults_${baseName}`] = fitResultsStore;
 
-  $(`${divId}_fitResult`).innerHTML = resultHtml;
+  if (fitBtn) fitBtn.disabled = false;
+  $(`${divId}_fitResult`).innerHTML = resultHtml || '<div class="status status-error">所有波长均无法拟合</div>';
 }
