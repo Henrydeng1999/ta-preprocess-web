@@ -2,7 +2,6 @@ var uploadedFiles = [];
 var ufsFiles = [];
 
 var _wasmReady = false;
-var _useWasm = false;
 
 function _flattenTA(ta) {
   var flat = [];
@@ -49,14 +48,16 @@ function _wasmChirpResult(ret, nWl, nTime) {
     console.log('[WASM] TA core loaded:', mod.greet());
     window.dispatchEvent(new CustomEvent('wasm-ready'));
   } catch(e) {
-    console.warn('[WASM] Load failed, JS fallback active:', e);
+    console.error('[WASM] Load failed:', e);
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:12px 20px;background:#dc3545;color:#fff;z-index:9999;text-align:center;font-family:monospace;font-size:13px;';
+    errDiv.textContent = '⚠️ WASM 核心加载失败，数据处理不可用。请检查浏览器是否支持 WebAssembly 并刷新页面。';
+    document.body.prepend(errDiv);
   }
 })();
 
 window.addEventListener('wasm-ready', function() {
   _wasmReady = true;
-  _useWasm = typeof window.taWasm !== 'undefined';
-  console.log('[WASM] Ready, acceleration:', _useWasm);
 });
 
 function $(id) { return document.getElementById(id); }
@@ -404,59 +405,11 @@ function computeSnrPerWl(time, ta, nBaseline) {
 }
 
 function polyfit(x, y, order) {
-  if (_useWasm) {
-    try {
-      return Array.from(window.taWasm.polyfit_wasm(new Float64Array(x), new Float64Array(y), order));
-    } catch(e) { console.warn('[WASM] polyfit fallback:', e); }
-  }
-  const n = x.length;
-  const m = order + 1;
-  const A = [];
-  const b = [];
-  for (let i = 0; i < m; i++) {
-    A[i] = [];
-    for (let j = 0; j < m; j++) {
-      let sum = 0;
-      for (let k = 0; k < n; k++) sum += Math.pow(x[k], i + j);
-      A[i][j] = sum;
-    }
-    let sum = 0;
-    for (let k = 0; k < n; k++) sum += y[k] * Math.pow(x[k], i);
-    b[i] = sum;
-  }
-  for (let col = 0; col < m; col++) {
-    let maxRow = col;
-    for (let row = col + 1; row < m; row++) {
-      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
-    }
-    [A[col], A[maxRow]] = [A[maxRow], A[col]];
-    [b[col], b[maxRow]] = [b[maxRow], b[col]];
-    for (let row = col + 1; row < m; row++) {
-      const factor = A[row][col] / A[col][col];
-      for (let j = col; j < m; j++) A[row][j] -= factor * A[col][j];
-      b[row] -= factor * b[col];
-    }
-  }
-  const coeffs = new Array(m);
-  for (let i = m - 1; i >= 0; i--) {
-    coeffs[i] = b[i];
-    for (let j = i + 1; j < m; j++) coeffs[i] -= A[i][j] * coeffs[j];
-    coeffs[i] /= A[i][i];
-  }
-  return coeffs;
+  return Array.from(window.taWasm.polyfit_wasm(new Float64Array(x), new Float64Array(y), order));
 }
 
 function polyval(coeffs, x) {
-  if (_useWasm) {
-    try {
-      return Array.from(window.taWasm.polyval_wasm(new Float64Array(coeffs), new Float64Array(x)));
-    } catch(e) { console.warn('[WASM] polyval fallback:', e); }
-  }
-  return x.map(xi => {
-    let val = 0;
-    for (let i = 0; i < coeffs.length; i++) val += coeffs[i] * Math.pow(xi, i);
-    return val;
-  });
+  return Array.from(window.taWasm.polyval_wasm(new Float64Array(coeffs), new Float64Array(x)));
 }
 
 function linspace(min, max, n) {
@@ -464,505 +417,52 @@ function linspace(min, max, n) {
   return Array.from({ length: n }, (_, i) => min + i * step);
 }
 
-function sigmaClipPolyfit(x, y, order, nIter, nSigma) {
-  let currentIdx = [];
-  for (let i = 0; i < x.length; i++) {
-    if (!isNaN(x[i]) && !isNaN(y[i])) currentIdx.push(i);
-  }
-  if (currentIdx.length < order + 1) {
-    return { coeffs: null, keptIdx: currentIdx, rejectedIdx: [] };
-  }
-  let allRejected = [];
-  for (let iter = 0; iter < nIter; iter++) {
-    const cx = currentIdx.map(i => x[i]);
-    const cy = currentIdx.map(i => y[i]);
-    const iterCoeffs = polyfit(cx, cy, order);
-    const yFit = polyval(iterCoeffs, cx);
-    const residuals = cy.map((v, i) => v - yFit[i]);
-    const resMean = residuals.reduce((a, b) => a + b, 0) / residuals.length;
-    const resStd = Math.sqrt(residuals.reduce((a, b) => a + (b - resMean) ** 2, 0) / Math.max(1, residuals.length - 1));
-    const newIdx = [];
-    const iterRejected = [];
-    for (let k = 0; k < currentIdx.length; k++) {
-      if (Math.abs(residuals[k] - resMean) > nSigma * resStd) {
-        iterRejected.push(currentIdx[k]);
-      } else {
-        newIdx.push(currentIdx[k]);
-      }
-    }
-    allRejected = allRejected.concat(iterRejected);
-    currentIdx = newIdx;
-    if (iterRejected.length === 0) break;
-    if (currentIdx.length < order + 1) break;
-  }
-  let coeffs = null;
-  if (currentIdx.length >= order + 1) {
-    const cx = currentIdx.map(i => x[i]);
-    const cy = currentIdx.map(i => y[i]);
-    coeffs = polyfit(cx, cy, order);
-  }
-  return { coeffs, keptIdx: currentIdx, rejectedIdx: allRejected };
-}
-
-function interp1d(xData, yData, xNew) {
-  return xNew.map(xn => {
-    if (isNaN(xn)) return NaN;
-    if (xn <= xData[0]) return yData[0];
-    if (xn >= xData[xData.length - 1]) return yData[yData.length - 1];
-    let lo = 0, hi = xData.length - 1;
-    while (hi - lo > 1) {
-      const mid = Math.floor((lo + hi) / 2);
-      if (xData[mid] <= xn) lo = mid; else hi = mid;
-    }
-    const t = (xn - xData[lo]) / (xData[hi] - xData[lo]);
-    return yData[lo] + t * (yData[hi] - yData[lo]);
-  });
-}
-
-function findT0HalfHeight(time, ta, searchRange) {
-  const t0List = [];
-  const tSearchMask = [];
-  const tSearch = [];
-  for (let j = 0; j < time.length; j++) {
-    if (time[j] >= searchRange[0] && time[j] <= searchRange[1]) {
-      tSearchMask.push(j);
-      tSearch.push(time[j]);
-    }
-  }
-  for (let i = 0; i < ta.length; i++) {
-    const sig = tSearchMask.map(j => ta[i][j]);
-    const validIdx = sig.map((v, idx) => !isNaN(v) ? idx : -1).filter(idx => idx >= 0);
-    if (validIdx.length < 5) { t0List.push(NaN); continue; }
-    const tValid = validIdx.map(idx => tSearch[idx]);
-    const sValid = validIdx.map(idx => sig[idx]);
-    const absSig = sValid.map(v => Math.abs(v));
-    let peakIdx = 0, peakVal = 0;
-    for (let k = 0; k < absSig.length; k++) {
-      if (absSig[k] > peakVal) { peakVal = absSig[k]; peakIdx = k; }
-    }
-    if (peakVal < 1e-6) { t0List.push(NaN); continue; }
-    const halfVal = peakVal * 0.5;
-    let crossIdx = -1;
-    const searchStart = Math.max(0, peakIdx - 20);
-    for (let k = searchStart; k < peakIdx; k++) {
-      if (absSig[k] >= halfVal) { crossIdx = k; break; }
-    }
-    if (crossIdx === -1) { t0List.push(tValid[peakIdx]); continue; }
-    if (crossIdx > 0 && crossIdx < tValid.length) {
-      const t1 = tValid[crossIdx - 1], t2 = tValid[crossIdx];
-      const v1 = absSig[crossIdx - 1], v2 = absSig[crossIdx];
-      if (Math.abs(v2 - v1) > 1e-10) {
-        t0List.push(t1 + (halfVal - v1) / (v2 - v1) * (t2 - t1));
-      } else {
-        t0List.push(tValid[crossIdx]);
-      }
-    } else {
-      t0List.push(tValid[crossIdx]);
-    }
-  }
-  return t0List;
-}
 
 function applyChirpShift(time, wl, ta, coeffs) {
-  if (_useWasm) {
-    try {
-      var flat = _flattenTA(ta);
-      var ret = window.taWasm.apply_chirp_with_coeffs(
-        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length, new Float64Array(coeffs)
-      );
-      if (ret && ret.length > 0) {
-        var result = _unflattenTA(ret, ta.length, time.length);
-        if (result && result.length > 0 && result[0].length > 0) return { TA2D: result };
-      }
-    } catch(e) { console.warn('[WASM] applyChirpShift fallback:', e); }
+  var flat = _flattenTA(ta);
+  var ret = window.taWasm.apply_chirp_with_coeffs(
+    new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length, new Float64Array(coeffs)
+  );
+  if (ret && ret.length > 0) {
+    var result = _unflattenTA(ret, ta.length, time.length);
+    if (result && result.length > 0 && result[0].length > 0) return { TA2D: result };
   }
-  // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
-  const invL2 = wl.map(w => 1.0 / (w * w));
-  const t0Fitted = polyval(coeffs, invL2);
-  // Reference t0 = average, so we straighten chirp without shifting the overall time axis
-  const refT0 = t0Fitted.reduce((a, b) => a + b, 0) / t0Fitted.length;
-  const corrected = ta.map((row, i) => {
-    const dt = t0Fitted[i] - refT0;
-    const timeShifted = time.map(t => t - dt);
-    const validX = [], validY = [];
-    for (let j = 0; j < row.length; j++) {
-      if (!isNaN(row[j])) { validX.push(timeShifted[j]); validY.push(row[j]); }
-    }
-    if (validX.length < 3) return row.map(v => NaN);
-    return interp1d(validX, validY, time);
-  });
-  return { TA2D: corrected, t0Fitted, refT0 };
-}
-
-async function nelderMead(costFunc, x0, maxIter = 3000) {
-  const n = x0.length;
-  const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
-  let simplex = [x0.slice()];
-  const f0 = costFunc(x0);
-  const fVals = [f0];
-  for (let i = 0; i < n; i++) {
-    const xi = x0.slice();
-    xi[i] += Math.abs(xi[i]) * 0.05 + 1e-6;
-    simplex.push(xi);
-    fVals.push(costFunc(xi));
-  }
-  let iter = 0;
-  let lastYield = 0;
-  while (iter < maxIter) {
-    if (cancelProcessing) break;
-    if (++lastYield >= 20) { lastYield = 0; await new Promise(r => setTimeout(r, 0)); }
-
-    const order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
-    const best = order[0], worst = order[n], secondWorst = order[n - 1];
-    const xBest = simplex[best];
-    const fBest = fVals[best], fSecond = fVals[secondWorst], fWorst = fVals[worst];
-
-    const centroid = new Array(n).fill(0);
-    for (let i = 0; i < n + 1; i++) {
-      if (i === worst) continue;
-      for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
-    }
-
-    const xRef = centroid.map((c, j) => c + alpha * (c - simplex[worst][j]));
-    const fRef = costFunc(xRef);
-    let shrink = false;
-
-    if (fRef < fSecond && fRef >= fBest) {
-      simplex[worst] = xRef; fVals[worst] = fRef;
-    } else if (fRef < fBest) {
-      const xExp = centroid.map((c, j) => c + gamma * (xRef[j] - c));
-      const fExp = costFunc(xExp);
-      if (fExp < fRef) { simplex[worst] = xExp; fVals[worst] = fExp; }
-      else { simplex[worst] = xRef; fVals[worst] = fRef; }
-    } else {
-      const xCon = centroid.map((c, j) => c + rho * (simplex[worst][j] - c));
-      const fCon = costFunc(xCon);
-      if (fCon < fWorst) { simplex[worst] = xCon; fVals[worst] = fCon; }
-      else { shrink = true; }
-    }
-    if (shrink) {
-      for (let i = 1; i < n + 1; i++) {
-        simplex[i] = xBest.map((b, j) => b + sigma * (simplex[i][j] - b));
-        fVals[i] = costFunc(simplex[i]);
-      }
-    }
-
-    // Convergence check AFTER all operations (including shrink)
-    const fMax = Math.max(...fVals), fMin = Math.min(...fVals);
-    if (Math.abs(fMax - fMin) < 1e-12) break;
-
-    iter++;
-  }
-  let bestIdx = 0;
-  for (let i = 1; i <= n; i++) { if (fVals[i] < fVals[bestIdx]) bestIdx = i; }
-  return { x: simplex[bestIdx], fVal: fVals[bestIdx], iterations: iter };
+  return { TA2D: ta };
 }
 
 function chirpCorrectionHalfHeight(time, wl, ta, opts) {
-  if (_useWasm) {
-    try {
-      var flat = _flattenTA(ta);
-      var ret = window.taWasm.chirp_correction_half_height(
-        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-        opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
-        opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
-      );
-      var result = _wasmChirpResult(ret, ta.length, time.length);
-      if (result) return result;
-    } catch(e) { console.warn('[WASM] chirpHalfHeight fallback:', e); }
-  }
-  const snrPerWl = computeSnrPerWl(time, ta, opts.nBaseline);
-  const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
-  const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
-  const snrFilteredOut = wl.map((_, i) => snrPerWl[i] < opts.snrThreshold);
-  // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
-  const invL2 = wl.map(w => 1.0 / (w * w));
-  const { coeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(invL2, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
-  const sigmaClippedOut = wl.map(() => false);
-  for (const ri of rejectedIdx) sigmaClippedOut[ri] = true;
-  if (!coeffs) return { TA2D: ta, coeffs: null, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut };
-  const shiftResult = applyChirpShift(time, wl, ta, coeffs);
-  const taAfter = shiftResult.TA2D !== undefined ? shiftResult.TA2D : shiftResult;
-  return { TA2D: taAfter, coeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut };
+  var flat = _flattenTA(ta);
+  var ret = window.taWasm.chirp_correction_half_height(
+    new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+    opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+    opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
+  );
+  return _wasmChirpResult(ret, ta.length, time.length) ||
+    { TA2D: ta, coeffs: null, t0PerWl: new Array(ta.length).fill(NaN), snrPerWl: new Array(ta.length).fill(0), snrFilteredOut: new Array(ta.length).fill(true), sigmaClippedOut: new Array(ta.length).fill(false) };
 }
 
 async function chirpCorrectionGlobal(time, wl, ta, opts) {
-  if (_useWasm) {
-    try {
-      var flat = _flattenTA(ta);
-      var ret = await new Promise(resolve => setTimeout(() => {
-        resolve(window.taWasm.chirp_correction_global(
-          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-          opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
-          opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
-        ));
-      }, 0));
-      var result = _wasmChirpResult(ret, ta.length, time.length);
-      if (result) return result;
-    } catch(e) { console.warn('[WASM] chirpGlobal fallback:', e); }
-  }
-  const snrPerWl = computeSnrPerWl(time, ta, opts.nBaseline);
-  const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
-  const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
-  const snrFilteredOut = wl.map((_, i) => snrPerWl[i] < opts.snrThreshold);
-  // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
-  const invL2 = wl.map(w => 1.0 / (w * w));
-  const { coeffs: initialCoeffs, keptIdx, rejectedIdx } = sigmaClipPolyfit(invL2, t0ForFit, opts.polyOrder, opts.nIter, opts.nSigma);
-  const sigmaClippedOut = wl.map(() => false);
-  for (const ri of rejectedIdx) sigmaClippedOut[ri] = true;
-
-  if (!initialCoeffs || keptIdx.length < opts.polyOrder + 1) {
-    return { TA2D: ta, coeffs: null, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs: null };
-  }
-
-  const nWl = wl.length;
-  const nTime = time.length;
-  const nCoeffs = initialCoeffs.length;
-
-  const precompValid = new Array(nWl);
-  for (let i = 0; i < nWl; i++) {
-    if (snrFilteredOut[i]) continue;
-    const row = ta[i];
-    const vxArr = [], vyArr = [];
-    for (let j = 0; j < nTime; j++) {
-      if (!isNaN(row[j])) { vxArr.push(time[j]); vyArr.push(row[j]); }
-    }
-    if (vxArr.length >= 5) {
-      precompValid[i] = { vx: vxArr, vy: vyArr, len: vxArr.length };
-    }
-  }
-
-  const tEval = [];
-  for (let j = 0; j < nTime; j++) {
-    if (time[j] >= -0.5 && time[j] <= 0.5) tEval.push(time[j]);
-  }
-  const tEvalLen = tEval.length;
-  const dtStep = tEvalLen >= 2 ? (tEval[tEvalLen - 1] - tEval[0]) / (tEvalLen - 1) : 0.01;
-  const invDtStep = 1.0 / dtStep;
-
-  function costFunc(coeffs) {
-    let refT0 = 0;
-    const dtArr = new Float64Array(nWl);
-    for (let i = 0; i < nWl; i++) {
-      let t0 = 0, xiPow = 1;
-      for (let k = 0; k < nCoeffs; k++) {
-        t0 += coeffs[k] * xiPow;
-        xiPow *= invL2[i]; // Fit in λ⁻² space: t₀ = a + b·(1/λ²) + c·(1/λ⁴)
-      }
-      dtArr[i] = t0;
-      refT0 += t0;
-    }
-    refT0 /= nWl;
-
-    let maxShift = 0;
-    for (let i = 0; i < nWl; i++) {
-      const s = Math.abs(dtArr[i] - refT0);
-      if (s > maxShift) maxShift = s;
-    }
-    if (maxShift > 5.0) return 1e10 * (1 + maxShift);
-
-    let totalSharpness = 0, nValidWl = 0;
-
-    for (let i = 0; i < nWl; i++) {
-      const pv = precompValid[i];
-      if (!pv) continue;
-
-      const dt = dtArr[i] - refT0;
-      const vx = pv.vx, vy = pv.vy, vxLen = pv.len;
-      const vx0 = vx[0], vxLast = vx[vxLen - 1];
-
-      let maxGrad = 0, prevSig = NaN, validCount = 0;
-
-      for (let k = 0; k < tEvalLen; k++) {
-        const xn = tEval[k] + dt;
-        if (xn < vx0 || xn > vxLast) continue;
-
-        let lo = 0, hi = vxLen - 1;
-        while (hi - lo > 1) {
-          const mid = (lo + hi) >> 1;
-          if (vx[mid] <= xn) lo = mid; else hi = mid;
-        }
-
-        const denom = vx[hi] - vx[lo];
-        const sig = Math.abs(denom) > 1e-15
-          ? vy[lo] + (xn - vx[lo]) / denom * (vy[hi] - vy[lo])
-          : vy[lo];
-
-        if (validCount > 0) {
-          const grad = Math.abs((sig - prevSig)) * invDtStep;
-          if (grad > maxGrad) maxGrad = grad;
-        }
-        prevSig = sig;
-        validCount++;
-      }
-
-      if (validCount >= 2) {
-        totalSharpness += maxGrad;
-        nValidWl++;
-      }
-    }
-
-    if (nValidWl === 0) return 1e10;
-
-    let reg = 0;
-    for (let k = 0; k < nCoeffs; k++) reg += (coeffs[k] - initialCoeffs[k]) ** 2;
-    reg = 0.01 * reg / nCoeffs;
-    return -totalSharpness / nValidWl + reg;
-  }
-
-  const result = await nelderMead(costFunc, initialCoeffs, 3000);
-  const optimalCoeffs = result.x;
-  const shiftResult = applyChirpShift(time, wl, ta, optimalCoeffs);
-  const taAfter = shiftResult.TA2D !== undefined ? shiftResult.TA2D : shiftResult;
-  return { TA2D: taAfter, coeffs: optimalCoeffs, t0PerWl, snrPerWl, snrFilteredOut, sigmaClippedOut, initialCoeffs };
+  var flat = _flattenTA(ta);
+  var ret = await new Promise(resolve => setTimeout(() => {
+    resolve(window.taWasm.chirp_correction_global(
+      new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+      opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+      opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
+    ));
+  }, 0));
+  return _wasmChirpResult(ret, ta.length, time.length) ||
+    { TA2D: ta, coeffs: null, t0PerWl: new Array(ta.length).fill(NaN), snrPerWl: new Array(ta.length).fill(0), snrFilteredOut: new Array(ta.length).fill(true), sigmaClippedOut: new Array(ta.length).fill(false) };
 }
 
 // ==================== CPM Removal ====================
 async function removeCpm(time, wl, ta, fitWindow, nBaseline) {
-  if (_useWasm) {
-    try {
-      var flat = _flattenTA(ta);
-      var ret = window.taWasm.remove_cpm_wasm(
-        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-        fitWindow, nBaseline
-      );
-      if (ret && ret.ta_2d) return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length) };
-    } catch(e) { console.warn('[WASM] removeCpm fallback:', e); }
-  }
-  // Find t=0 index
-  let t0Idx = 0, minAbsT = Infinity;
-  for (let i = 0; i < time.length; i++) {
-    if (Math.abs(time[i]) < minAbsT) { minAbsT = Math.abs(time[i]); t0Idx = i; }
-  }
-
-  // Baseline indices (t < 0)
-  const baselineIdx = [];
-  for (let j = 0; j < time.length; j++) {
-    if (time[j] < 0) baselineIdx.push(j);
-  }
-
-  const result = [];
-  for (let ri = 0; ri < ta.length; ri++) {
-    const row = ta[ri];
-    const allNan = row.every(v => isNaN(v));
-    if (allNan) { result.push([...row]); continue; }
-
-    // Estimate baseline
-    let blSum = 0, blCount = 0;
-    for (let k = 0; k < Math.min(nBaseline, baselineIdx.length); k++) {
-      const j = baselineIdx[k];
-      if (!isNaN(row[j])) { blSum += row[j]; blCount++; }
-    }
-    const blEst = blCount > 0 ? blSum / blCount : 0;
-
-    // Estimate peak at t=0
-    let peakEst = 0;
-    if (!isNaN(row[t0Idx])) {
-      peakEst = row[t0Idx] - blEst;
-    } else {
-      for (let d = 1; d < 5; d++) {
-        if (t0Idx + d < time.length && !isNaN(row[t0Idx + d])) { peakEst = row[t0Idx + d] - blEst; break; }
-        if (t0Idx >= d && !isNaN(row[t0Idx - d])) { peakEst = row[t0Idx - d] - blEst; break; }
-      }
-    }
-
-    // Collect fit window data
-    const fitT = [], fitY = [];
-    for (let j = 0; j < time.length; j++) {
-      if (Math.abs(time[j]) <= fitWindow && !isNaN(row[j])) {
-        fitT.push(time[j]); fitY.push(row[j]);
-      }
-    }
-    if (fitT.length < 4) { result.push([...row]); continue; }
-
-    // CPM model: A*exp(-t²/(2σ²)) + B*(-t/σ²)*exp(-t²/(2σ²)) + C
-    function cpmModel(p, t) {
-      const [a, logSigma, b, c] = p;
-      const sigma = Math.exp(logSigma);
-      const gauss = Math.exp(-t * t / (2 * sigma * sigma));
-      return a * gauss + b * (-t / (sigma * sigma)) * gauss + c;
-    }
-
-    // Nelder-Mead fit with log(sigma) parameterization
-    const x0 = [peakEst, Math.log(0.05), 0, blEst];
-    function cost(p) {
-      let ssr = 0;
-      for (let k = 0; k < fitT.length; k++) {
-        const r = cpmModel(p, fitT[k]) - fitY[k];
-        ssr += r * r;
-      }
-      return ssr;
-    }
-    const fitted = await nelderMead(cost, x0, 1500);
-    const fittedP = fitted.x;
-    const sigmaFit = Math.exp(fittedP[1]);
-
-    if (sigmaFit <= 0 || isNaN(sigmaFit) || !isFinite(sigmaFit) || sigmaFit > fitWindow * 5) { result.push([...row]); continue; }
-
-    const aFit = fittedP[0], bFit = fittedP[2], cFit = fittedP[3];
-
-    // Subtract CPM component
-    result.push(row.map((v, j) => {
-      if (isNaN(v)) return NaN;
-      const t = time[j];
-      const gauss = Math.exp(-t * t / (2 * sigmaFit * sigmaFit));
-      const cpmComp = aFit * gauss + bFit * (-t / (sigmaFit * sigmaFit)) * gauss;
-      return v - cpmComp;
-    }));
-
-    // Yield every 10 wavelengths to keep UI responsive
-    if (ri % 10 === 0) await new Promise(r => setTimeout(r, 0));
-  }
-
-  return { TA2D: result };
-}
-
-// Synchronous Nelder-Mead (simplified for CPM fitting)
-function nelderMeadSync(costFunc, x0, maxIter) {
-  const n = x0.length;
-  const alpha = 1.0, gamma = 2.0, rho = 0.5, sigma = 0.5;
-  let simplex = [x0.slice()];
-  let fVals = [costFunc(x0)];
-  for (let i = 0; i < n; i++) {
-    const xi = x0.slice();
-    xi[i] += Math.abs(xi[i]) > 1e-4 ? xi[i] * 0.05 : 0.1;
-    simplex.push(xi);
-    fVals.push(costFunc(xi));
-  }
-  for (let iter = 0; iter < maxIter; iter++) {
-    const order = [...Array(n + 1).keys()].sort((a, b) => fVals[a] - fVals[b]);
-    const best = order[0], worst = order[n], secondWorst = order[n - 1];
-    const centroid = Array(n).fill(0);
-    for (let i = 0; i <= n; i++) {
-      if (i !== worst) for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
-    }
-    const xRef = centroid.map((c, j) => c + alpha * (c - simplex[worst][j]));
-    const fRef = costFunc(xRef);
-    let shrink = false;
-    if (fRef < fVals[secondWorst] && fRef >= fVals[best]) {
-      simplex[worst] = xRef; fVals[worst] = fRef;
-    } else if (fRef < fVals[best]) {
-      const xExp = centroid.map((c, j) => c + gamma * (xRef[j] - c));
-      const fExp = costFunc(xExp);
-      simplex[worst] = fExp < fRef ? xExp : xRef; fVals[worst] = fExp < fRef ? fExp : fRef;
-    } else {
-      const xCon = centroid.map((c, j) => c + rho * (simplex[worst][j] - c));
-      const fCon = costFunc(xCon);
-      if (fCon < fVals[worst]) { simplex[worst] = xCon; fVals[worst] = fCon; }
-      else shrink = true;
-    }
-    if (shrink) {
-      for (let i = 1; i <= n; i++) {
-        simplex[i] = simplex[best].map((b, j) => b + sigma * (simplex[i][j] - b));
-        fVals[i] = costFunc(simplex[i]);
-      }
-    }
-    const fMax = Math.max(...fVals), fMin = Math.min(...fVals);
-    if ((fMax - fMin) / Math.max(Math.abs(fMax), Math.abs(fMin), 1) < 1e-10) break;
-  }
-  let bestIdx = 0;
-  for (let i = 1; i <= n; i++) if (fVals[i] < fVals[bestIdx]) bestIdx = i;
-  return simplex[bestIdx];
+  var flat = _flattenTA(ta);
+  var ret = window.taWasm.remove_cpm_wasm(
+    new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+    fitWindow, nBaseline
+  );
+  if (ret && ret.ta_2d) return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length) };
+  return { TA2D: ta };
 }
 
 // ==================== IRF Deconvolution ====================
@@ -1019,90 +519,13 @@ function estimateIrf(time, ta, nWlAvg) {
 }
 
 async function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
-  if (_useWasm) {
-    try {
-      var flat = _flattenTA(ta);
-      var ret = window.taWasm.deconvolve_irf_wasm(
-        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-        irfFwhm, nIter
-      );
-      if (ret && ret.ta_2d) return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length), irfFwhm: ret.irf_fwhm };
-    } catch(e) { console.warn('[WASM] deconvolveIrf fallback:', e); }
-  }
-  const nTime = time.length;
-  if (nTime === 0 || ta.length === 0) return { TA2D: ta, irfFwhm };
-
-  const dt = nTime >= 2 ? (time[nTime - 1] - time[0]) / (nTime - 1) : 1;
-  if (irfFwhm < dt * 0.5) return { TA2D: ta, irfFwhm };
-
-  const sigma = irfFwhm / 2.355;
-  const kernel = makeGaussianKernel(time, sigma);
-  const kernelFlipped = kernel.slice().reverse();
-
-  const nIterActual = nIter || 15;
-  const result = [];
-  for (let ri = 0; ri < ta.length; ri++) {
-    const row = ta[ri];
-    const validCount = row.filter(v => !isNaN(v)).length;
-    if (validCount < 5) { result.push([...row]); continue; }
-
-    const signal = row.map(v => isNaN(v) ? 0 : v);
-    const nanMask = row.map(v => isNaN(v));
-    let f = signal.slice();
-    let diverged = false;
-
-    for (let iter = 0; iter < nIterActual; iter++) {
-      const hf = convolve1d(f, kernel);
-      const ratio = signal.map((s, j) => {
-        if (nanMask[j]) return 1;
-        return Math.abs(hf[j]) > 1e-15 ? s / hf[j] : 1;
-      });
-      const corr = convolve1d(ratio, kernelFlipped);
-      const fNew = f.map((v, j) => v * corr[j]);
-      const maxVal = Math.max(...fNew.map(Math.abs));
-      if (maxVal > 1e10 || isNaN(maxVal) || !isFinite(maxVal)) { diverged = true; break; }
-      f = fNew;
-    }
-
-    if (diverged) { result.push([...row]); continue; }
-    result.push(f.map((v, j) => nanMask[j] ? NaN : v));
-
-    // Yield every 10 wavelengths to keep UI responsive
-    if (ri % 10 === 0) await new Promise(r => setTimeout(r, 0));
-  }
-
-  return { TA2D: result, irfFwhm };
-}
-
-function makeGaussianKernel(time, sigma) {
-  const dt = time.length >= 2 ? (time[time.length - 1] - time[0]) / (time.length - 1) : 1;
-  let nKernel = Math.ceil(4 * sigma / dt) * 2 + 1;
-  nKernel = Math.max(3, nKernel);
-  const center = (nKernel - 1) / 2;
-  const kernel = [];
-  for (let i = 0; i < nKernel; i++) {
-    const x = (i - center) * dt;
-    kernel.push(Math.exp(-x * x / (2 * sigma * sigma)));
-  }
-  return kernel;
-}
-
-function convolve1d(signal, kernel) {
-  const n = signal.length, k = kernel.length;
-  if (n === 0 || k === 0) return Array(n).fill(0);
-  const kSum = kernel.reduce((a, b) => a + b, 0);
-  const normK = Math.abs(kSum) > 1e-15 ? kernel.map(v => v / kSum) : kernel;
-  const halfK = Math.floor(k / 2);
-  const result = Array(n).fill(0);
-  for (let i = 0; i < n; i++) {
-    let sum = 0;
-    for (let j = 0; j < k; j++) {
-      const si = i + j - halfK;
-      if (si >= 0 && si < n) sum += signal[si] * normK[k - 1 - j];
-    }
-    result[i] = sum;
-  }
-  return result;
+  var flat = _flattenTA(ta);
+  var ret = window.taWasm.deconvolve_irf_wasm(
+    new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+    irfFwhm, nIter
+  );
+  if (ret && ret.ta_2d) return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length), irfFwhm: ret.irf_fwhm };
+  return { TA2D: ta, irfFwhm };
 }
 
 function makeHeatmapData(time, wl, ta, tRange) {
@@ -1128,6 +551,7 @@ function makeHeatmapData(time, wl, ta, tRange) {
 let cancelProcessing = false;
 
 async function processAll() {
+  if (!_wasmReady) { setStatus('❌ WASM 核心尚未加载，请刷新页面重试', 'error'); return; }
   if (uploadedFiles.length === 0) return;
   const wlMin = parseFloat($('wlMin').value);
   const wlMax = parseFloat($('wlMax').value);
@@ -2095,467 +1519,16 @@ function applyManualChirp(baseName, divId) {
   if (panel) panel.style.borderColor = '#0f0';
 }
 
-function multiExpFunc(params, t, nExp) {
-  var y = params[params.length - 1];
-  for (var k = 0; k < nExp; k++) {
-    var amp = params[k * 2];
-    var tau = params[k * 2 + 1];
-    if (t < 0) continue;
-    if (Math.abs(tau) > 1e-12) {
-      y += amp * Math.exp(-t / tau);
-    } else {
-      y += amp;
-    }
-  }
-  return y;
-}
-
-// Internal: log(tau) parameterized version for optimization
-function multiExpFuncLog(params, t, nExp) {
-  var y = params[params.length - 1];
-  for (var k = 0; k < nExp; k++) {
-    var amp = params[k * 2];
-    var tau = Math.exp(params[k * 2 + 1]);
-    if (t < 0) continue;
-    y += amp * Math.exp(-t / tau);
-  }
-  return y;
-}
-
-// Levenberg-Marquardt optimizer (log(tau) parameterization)
-// Refines Nelder-Mead result for better convergence
-function levenbergMarquardt(tFit, sFit, nExp, initialParams, maxIter) {
-  const nP = nExp * 2 + 1;
-  const nD = tFit.length;
-  if (nD <= nP) return null;
-
-  let params = initialParams.slice();
-  let lambda = 0.001;
-  const lambdaUp = 10.0, lambdaDown = 0.1, maxLambda = 1e12;
-
-  // Compute residuals
-  function residuals(p) {
-    return tFit.map((t, i) => multiExpFuncLog(p, t, nExp) - sFit[i]);
-  }
-
-  // Compute numerical Jacobian
-  function jacobian(p) {
-    const h = 1e-7;
-    const J = [];
-    for (let i = 0; i < nD; i++) {
-      const row = [];
-      const fBase = multiExpFuncLog(p, tFit[i], nExp);
-      for (let j = 0; j < nP; j++) {
-        const pPlus = p.slice();
-        pPlus[j] += h;
-        row.push((multiExpFuncLog(pPlus, tFit[i], nExp) - fBase) / h);
-      }
-      J.push(row);
-    }
-    return J;
-  }
-
-  let res = residuals(params);
-  let chi2 = res.reduce((s, r) => s + r * r, 0);
-
-  for (let iter = 0; iter < maxIter; iter++) {
-    const J = jacobian(params);
-
-    // JtJ and Jtr
-    const JtJ = [];
-    const Jtr = [];
-    for (let i = 0; i < nP; i++) {
-      JtJ[i] = [];
-      Jtr[i] = 0;
-      for (let j = 0; j < nP; j++) {
-        let s = 0;
-        for (let k = 0; k < nD; k++) s += J[k][i] * J[k][j];
-        JtJ[i][j] = s;
-      }
-      for (let k = 0; k < nD; k++) Jtr[i] += J[k][i] * res[k];
-    }
-
-    // Damped: (JtJ + lambda*I) * delta = -Jtr
-    const damped = JtJ.map((row, i) => row.slice());
-    for (let i = 0; i < nP; i++) damped[i][i] += lambda;
-
-    const inv = invertMatrix(damped);
-    if (!inv) { lambda *= lambdaUp; continue; }
-
-    const delta = [];
-    for (let i = 0; i < nP; i++) {
-      let s = 0;
-      for (let j = 0; j < nP; j++) s -= inv[i][j] * Jtr[j];
-      delta.push(s);
-    }
-
-    const newParams = params.map((p, i) => p + delta[i]);
-    const newRes = residuals(newParams);
-    const newChi2 = newRes.reduce((s, r) => s + r * r, 0);
-
-    if (newChi2 < chi2) {
-      const improvement = (chi2 - newChi2) / (chi2 + 1e-30);
-      params = newParams;
-      res = newRes;
-      chi2 = newChi2;
-      if (improvement > 0.01) lambda *= lambdaDown;
-    } else {
-      lambda *= lambdaUp;
-    }
-
-    const deltaNorm = Math.sqrt(delta.reduce((s, d) => s + d * d, 0));
-    if (deltaNorm < 1e-12 || lambda > maxLambda) break;
-  }
-
-  return { params, chi2 };
-}
-
 async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
-  if (_useWasm) {
-    try {
-      var result = window.taWasm.fit_multi_exp(
-        new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
-      );
-      if (result) return result;
-    } catch(e) { console.warn('[WASM] fitMultiExp fallback:', e); }
-  }
-  const fitIdx = [];
-  for (let j = 0; j < time.length; j++) {
-    if (time[j] >= tFitMin && time[j] <= tFitMax && !isNaN(signal[j])) {
-      fitIdx.push(j);
-    }
-  }
-  if (fitIdx.length < nExp * 2 + 1) return null;
-
-  const tFit = fitIdx.map(j => time[j]);
-  const sFit = fitIdx.map(j => signal[j]);
-
-  const sMax = Math.max(...sFit.map(Math.abs));
-  const sMin = Math.min(...sFit);
-  const sRange = sMax - sMin;
-  const sFirst = sFit[0];
-  const sLast = sFit[sFit.length - 1];
-
-  const tMin = Math.max(tFit[0], 0.01);
-  const tMax = tFit[tFit.length - 1];
-  const logTMin = Math.log(tMin);
-  const logTMax = Math.log(tMax);
-  const logRange = logTMax - logTMin;
-
-  // ===== Progressive initial guess (Origin-style) =====
-  // Step 1: Fit single exponential to get A1, tau1, y0
-  // Step 2: Compute residuals, fit single exponential to residuals for A2, tau2
-  // Step 3: Repeat for more components
-
-  function costFunc1(params) {
-    let ss = 0;
-    for (let i = 0; i < tFit.length; i++) {
-      const yPred = multiExpFuncLog(params, tFit[i], 1);
-      ss += (yPred - sFit[i]) ** 2;
-    }
-    return ss;
-  }
-
-  // Single exponential initial guesses
-  const singleGuesses = [];
-  // Strategy A: Use first/last points
-  singleGuesses.push([sFirst - sLast, logTMin + 0.5 * logRange, sLast * 0.5]);
-  // Strategy B: Slope-based tau estimate
-  // At t=0: y ≈ A + y0, at t→∞: y → y0
-  // tau ≈ area under curve / amplitude
-  let areaSum = 0;
-  for (let i = 1; i < tFit.length; i++) {
-    areaSum += (sFit[i] - sLast) * (tFit[i] - tFit[i - 1]);
-  }
-  const ampEst = sFirst - sLast;
-  const tauFromArea = Math.abs(ampEst) > 1e-15 ? Math.abs(areaSum / ampEst) : (tMax - tMin) * 0.3;
-  const clampedTauFromArea = Math.max(tMin, Math.min(tMax, tauFromArea));
-  singleGuesses.push([ampEst, Math.log(clampedTauFromArea), sLast * 0.5]);
-  // Strategy C: Half-decay point
-  const halfVal = (sFirst + sLast) / 2;
-  let tHalf = tMin + (tMax - tMin) * 0.3;
-  for (let i = 1; i < tFit.length; i++) {
-    if ((sFit[i - 1] - halfVal) * (sFit[i] - halfVal) <= 0) {
-      const frac = Math.abs(sFit[i - 1] - halfVal) / (Math.abs(sFit[i - 1] - halfVal) + Math.abs(sFit[i] - halfVal) + 1e-30);
-      tHalf = tFit[i - 1] + frac * (tFit[i] - tFit[i - 1]);
-      break;
-    }
-  }
-  const tauFromHalf = Math.max(tMin, tHalf / Math.LN2);
-  singleGuesses.push([ampEst, Math.log(tauFromHalf), sLast * 0.5]);
-  // Strategy D: Equal spacing
-  singleGuesses.push([sRange * 0.8, logTMin + 0.3 * logRange, sLast * 0.5]);
-
-  // Fit single exponential with multiple guesses
-  let bestSingle = null;
-  let bestSingleChi2 = Infinity;
-  for (const x0 of singleGuesses) {
-    const result = await nelderMead(costFunc1, x0, 1500);
-    if (result.fVal < bestSingleChi2) {
-      bestSingleChi2 = result.fVal;
-      bestSingle = result;
-    }
-  }
-  // LM refine single
-  if (bestSingle) {
-    const lm1 = levenbergMarquardt(tFit, sFit, 1, bestSingle.x, 300);
-    if (lm1 && lm1.chi2 < bestSingleChi2) {
-      bestSingle = { x: lm1.params, fVal: lm1.chi2 };
-      bestSingleChi2 = lm1.chi2;
-    }
-  }
-
-  // Build progressive guesses for multi-exponential
-  const progressiveGuesses = [];
-
-  if (nExp === 1) {
-    // Just use the single exponential result
-    if (bestSingle) progressiveGuesses.push(bestSingle.x);
-  } else {
-    // Compute residuals from single exponential fit
-    const singleParams = bestSingle ? bestSingle.x : [ampEst, Math.log(tMax * 0.3), sLast * 0.5];
-    const residuals = tFit.map((t, i) => sFit[i] - multiExpFuncLog(singleParams, t, 1));
-
-    // Fit single exponential to residuals
-    const resFirst = residuals[0];
-    const resLast = residuals[residuals.length - 1];
-    const resAmp = resFirst - resLast;
-    const resRange = Math.max(...residuals) - Math.min(...residuals);
-
-    function costFuncRes(params) {
-      let ss = 0;
-      for (let i = 0; i < tFit.length; i++) {
-        const yPred = multiExpFuncLog(params, tFit[i], 1);
-        ss += (yPred - residuals[i]) ** 2;
-      }
-      return ss;
-    }
-
-    const resGuesses = [
-      [resAmp, logTMin + 0.2 * logRange, resLast * 0.5],
-      [resAmp, logTMin + 0.5 * logRange, resLast * 0.5],
-      [resRange * 0.5, logTMin + 0.15 * logRange, 0],
-      [-resRange * 0.5, logTMin + 0.15 * logRange, 0],
-    ];
-
-    let bestRes = null;
-    let bestResChi2 = Infinity;
-    for (const x0 of resGuesses) {
-      const result = await nelderMead(costFuncRes, x0, 1000);
-      if (result.fVal < bestResChi2) {
-        bestResChi2 = result.fVal;
-        bestRes = result;
-      }
-    }
-
-    // Combine single + residual fit as initial guess for 2-exp
-    if (nExp >= 2 && bestSingle && bestRes) {
-      const A1 = singleParams[0], logTau1 = singleParams[1], y0 = singleParams[2];
-      const A2 = bestRes.x[0], logTau2 = bestRes.x[1];
-      // Sort by tau
-      if (logTau1 <= logTau2) {
-        progressiveGuesses.push([A1, logTau1, A2, logTau2, y0]);
-      } else {
-        progressiveGuesses.push([A2, logTau2, A1, logTau1, y0]);
-      }
-      // Also try swapping amplitudes (fast component might be in residuals)
-      progressiveGuesses.push([A2, logTau2, A1, logTau1, y0]);
-    }
-
-    // For 3+ exp: further decompose residuals
-    if (nExp >= 3 && bestRes) {
-      const resParams2 = bestRes.x;
-      const residuals2 = tFit.map((t, i) => residuals[i] - multiExpFuncLog(resParams2, t, 1));
-      const res2First = residuals2[0];
-      const res2Last = residuals2[residuals2.length - 1];
-      const res2Amp = res2First - res2Last;
-      const res2Range = Math.max(...residuals2) - Math.min(...residuals2);
-
-      // Try fitting a third component to the double-residuals
-      const thirdLogTaus = [logTMin + 0.1 * logRange, logTMin + 0.3 * logRange, logTMin + 0.7 * logRange];
-      for (const logTau3 of thirdLogTaus) {
-        const A1 = singleParams[0], logTau1 = singleParams[1];
-        const A2 = resParams2[0], logTau2 = resParams2[1];
-        const y0 = singleParams[2] + resParams2[2];
-        // Sort by tau
-        const components = [
-          { a: A1, lt: logTau1 },
-          { a: A2, lt: logTau2 },
-          { a: res2Amp || res2Range * 0.3, lt: logTau3 }
-        ].sort((a, b) => a.lt - b.lt);
-        progressiveGuesses.push([components[0].a, components[0].lt, components[1].a, components[1].lt, components[2].a, components[2].lt, y0]);
-      }
-    }
-  }
-
-  // Also add traditional grid-based guesses as backup
-  const tauFracs = {
-    1: [[0.5]],
-    2: [[0.2, 0.8], [0.15, 0.65], [0.3, 0.85], [0.1, 0.5]],
-    3: [[0.1, 0.4, 0.8], [0.15, 0.45, 0.75], [0.05, 0.3, 0.7]],
-    4: [[0.08, 0.25, 0.55, 0.85], [0.1, 0.3, 0.6, 0.9]],
-    5: [[0.05, 0.2, 0.4, 0.65, 0.9], [0.08, 0.25, 0.5, 0.75, 0.95]]
-  };
-
-  const ampStrategies = [
-    function(k) { return k === 0 ? sFirst - sLast : sRange / nExp; },
-    function(k) { return sRange / nExp; },
-    function(k) { return sRange * Math.pow(0.5, k + 1); }
-  ];
-
-  const fracs = tauFracs[nExp] || [[0.5]];
-  const gridGuesses = [];
-  for (const fr of fracs) {
-    for (const ampFn of ampStrategies) {
-      const x0 = [];
-      for (let k = 0; k < nExp; k++) {
-        x0.push(ampFn(k));
-        x0.push(logTMin + fr[k] * logRange);
-      }
-      x0.push(sLast * 0.5);
-      gridGuesses.push(x0);
-    }
-  }
-
-  // Add negated-amplitude variants of grid guesses for negative-dominant signals (GSB)
-  const gridNegated = gridGuesses.map(x0 => {
-    const neg = x0.slice();
-    for (let k = 0; k < nExp; k++) neg[k * 2] = -neg[k * 2];
-    return neg;
-  });
-
-  // Combine: progressive first (quality), then grid + negated variants
-  const allGuesses = [...progressiveGuesses, ...gridGuesses, ...gridNegated];
-
-  let bestResult = null;
-  let bestChi2 = Infinity;
-
-  // Phase 1: Nelder-Mead coarse search
-  const costFunc = (params) => {
-    let ss = 0;
-    for (let i = 0; i < tFit.length; i++) {
-      const yPred = multiExpFuncLog(params, tFit[i], nExp);
-      ss += (yPred - sFit[i]) ** 2;
-    }
-    return ss;
-  };
-
-  for (const x0 of allGuesses) {
-    if (x0.length !== nExp * 2 + 1) continue;
-    if (cancelProcessing) break;
-
-    const result = await nelderMead(costFunc, x0, 1500);
-    if (result.fVal < bestChi2) {
-      bestChi2 = result.fVal;
-      bestResult = result;
-    }
-  }
-
-  if (!bestResult) return null;
-
-  // Phase 2: Levenberg-Marquardt refinement
-  const lmResult = levenbergMarquardt(tFit, sFit, nExp, bestResult.x, 500);
-  if (lmResult && lmResult.chi2 < bestChi2) {
-    bestResult = { x: lmResult.params, fVal: lmResult.chi2 };
-    bestChi2 = lmResult.chi2;
-  }
-  const bestParams = bestResult.x;
-
-  // Convert from log(tau) to tau
-  const finalParams = [];
-  for (let k = 0; k < nExp; k++) {
-    const amp = bestParams[k * 2];
-    const tau = Math.exp(bestParams[k * 2 + 1]);
-    finalParams.push(amp, tau);
-  }
-  finalParams.push(bestParams[bestParams.length - 1]);
-
-  const sorted = [];
-  for (let k = 0; k < nExp; k++) {
-    sorted.push({ A: finalParams[k * 2], tau: finalParams[k * 2 + 1] });
-  }
-  sorted.sort((a, b) => a.tau - b.tau);
-
-  const sortedParams = [];
-  for (const item of sorted) {
-    sortedParams.push(item.A, item.tau);
-  }
-  sortedParams.push(finalParams[finalParams.length - 1]);
-
-  let ssTot = 0;
-  const sMeanVal = sFit.reduce((a, b) => a + b, 0) / sFit.length;
-  for (let i = 0; i < sFit.length; i++) ssTot += (sFit[i] - sMeanVal) ** 2;
-  const r2 = 1 - bestResult.fVal / ssTot;
-
-  const nP = sortedParams.length;
-  const nD = tFit.length;
-  const sigma2 = bestResult.fVal / (nD - nP);
-
-  // Numerical Jacobian using sortedParams (with actual tau values)
-  const J = [];
-  for (let i = 0; i < nD; i++) {
-    const row = [];
-    for (let j = 0; j < nP; j++) {
-      const eps = Math.abs(sortedParams[j]) * 1e-6 + 1e-10;
-      const pPlus = sortedParams.slice();
-      pPlus[j] += eps;
-      const fPlus = multiExpFunc(pPlus, tFit[i], nExp);
-      const fOrig = multiExpFunc(sortedParams, tFit[i], nExp);
-      row.push((fPlus - fOrig) / eps);
-    }
-    J.push(row);
-  }
-
-  const JtJ = [];
-  for (let i = 0; i < nP; i++) {
-    JtJ[i] = [];
-    for (let j = 0; j < nP; j++) {
-      let s = 0;
-      for (let k = 0; k < nD; k++) s += J[k][i] * J[k][j];
-      JtJ[i][j] = s;
-    }
-  }
-
-  const covInv = JtJ;
-  const cov = invertMatrix(covInv);
-  const stdErrs = [];
-  if (cov) {
-    for (let i = 0; i < nP; i++) {
-      stdErrs.push(Math.sqrt(Math.max(0, sigma2 * cov[i][i])));
-    }
-  }
-
-  return { params: sortedParams, r2, tFit, sFit, nExp, stdErrs };
-}
-
-function invertMatrix(M) {
-  const n = M.length;
-  const A = M.map((row, i) => row.map((v, j) => v + (i === j ? 1e-10 : 0)));
-  const I = [];
-  for (let i = 0; i < n; i++) {
-    I[i] = new Array(n).fill(0);
-    I[i][i] = 1;
-  }
-  for (let col = 0; col < n; col++) {
-    let maxRow = col;
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(A[row][col]) > Math.abs(A[maxRow][col])) maxRow = row;
-    }
-    [A[col], A[maxRow]] = [A[maxRow], A[col]];
-    [I[col], I[maxRow]] = [I[maxRow], I[col]];
-    if (Math.abs(A[col][col]) < 1e-14) return null;
-    const pivot = A[col][col];
-    for (let j = 0; j < n; j++) { A[col][j] /= pivot; I[col][j] /= pivot; }
-    for (let row = 0; row < n; row++) {
-      if (row === col) continue;
-      const factor = A[row][col];
-      for (let j = 0; j < n; j++) { A[row][j] -= factor * A[col][j]; I[row][j] -= factor * I[col][j]; }
-    }
-  }
-  return I;
+  var r = window.taWasm.fit_multi_exp(
+    new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
+  );
+  if (!r) return null;
+  return { params: Array.from(r.params), stdErrs: Array.from(r.std_errs), r2: r.r2, t_fit: Array.from(r.t_fit), y_fit: Array.from(r.y_fit) };
 }
 
 async function doKineticFit(baseName, divId) {
+  if (!_wasmReady) { setStatus('❌ WASM 核心尚未加载，请刷新页面重试', 'error'); return; }
   const data = window[`data_${baseName}`];
   if (!data) return;
 
@@ -2610,8 +1583,8 @@ async function doKineticFit(baseName, divId) {
       continue;
     }
 
-    const tFine = linspace(tFitMin, tFitMax, 500);
-    const yFine = tFine.map(t => multiExpFunc(fitResult.params, t, nExp) * 1000);
+    const tFine = fitResult.t_fit;
+    const yFine = fitResult.y_fit.map(v => v * 1000);
     traces.push({
       x: tFine, y: yFine,
       mode: 'lines', name: `${actualWl}nm 拟合`,
