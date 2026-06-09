@@ -816,7 +816,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
           </div>
           <div class="param-group">
             <label>时间轴标度</label>
-            <select id="${divId}_fitTimeScale">
+            <select id="${divId}_fitTimeScale" onchange="updateFitTimeScale('${divId}')">
               <option value="linear">线性</option>
               <option value="log">对数</option>
             </select>
@@ -1512,6 +1512,16 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
   );
   if (!r) return null;
   return { params: Array.from(r.params), stdErrs: Array.from(r.std_errs), r2: r.r2, t_fit: Array.from(r.t_fit), y_fit: Array.from(r.y_fit) };
+}
+
+function updateFitTimeScale(divId) {
+  const plotEl = $(`${divId}_fitPlot`);
+  if (!plotEl || !plotEl.data || plotEl.data.length === 0) return;
+  const scale = $(`${divId}_fitTimeScale`).value;
+  const shapes = scale === 'linear'
+    ? [{ type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: { color: 'gray', dash: 'dot' } }]
+    : [];
+  Plotly.relayout(plotEl, { 'xaxis.type': scale, shapes });
 }
 
 async function doKineticFit(baseName, divId) {
