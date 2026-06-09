@@ -15,7 +15,7 @@ export function deconvolve_irf_wasm(time: Float64Array, wl: Float64Array, ta: Fl
 
 export function estimate_irf_wasm(time: Float64Array, wl: Float64Array, ta: Float64Array, n_wl: number, n_time: number, n_wl_avg: number): any;
 
-export function fit_multi_exp(time: Float64Array, signal: Float64Array, n_exp: number, t_fit_min: number, t_fit_max: number): any;
+export function fit_multi_exp(time: Float64Array, signal: Float64Array, n_exp: number, t_fit_min: number, t_fit_max: number, quality: number): any;
 
 export function greet(): string;
 
@@ -40,7 +40,7 @@ export interface InitOutput {
     readonly crop_wavelength: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
     readonly deconvolve_irf_wasm: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
     readonly estimate_irf_wasm: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => any;
-    readonly fit_multi_exp: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly fit_multi_exp: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
     readonly greet: () => [number, number];
     readonly parse_csv_wasm: (a: number, b: number) => any;
     readonly parse_ufs_wasm: (a: number, b: number) => any;

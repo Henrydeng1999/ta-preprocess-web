@@ -8,7 +8,7 @@ export const chirp_correction_half_height: (a: number, b: number, c: number, d: 
 export const crop_wavelength: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
 export const deconvolve_irf_wasm: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
 export const estimate_irf_wasm: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => any;
-export const fit_multi_exp: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+export const fit_multi_exp: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
 export const greet: () => [number, number];
 export const parse_csv_wasm: (a: number, b: number) => any;
 export const parse_ufs_wasm: (a: number, b: number) => any;

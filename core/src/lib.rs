@@ -249,8 +249,8 @@ pub fn deconvolve_irf_wasm(
 }
 
 #[wasm_bindgen]
-pub fn fit_multi_exp(time: &[f64], signal: &[f64], n_exp: usize, t_fit_min: f64, t_fit_max: f64) -> JsValue {
-    let result = fitting::fit_multi_exp(time, signal, n_exp, t_fit_min, t_fit_max);
+pub fn fit_multi_exp(time: &[f64], signal: &[f64], n_exp: usize, t_fit_min: f64, t_fit_max: f64, quality: u8) -> JsValue {
+    let result = fitting::fit_multi_exp(time, signal, n_exp, t_fit_min, t_fit_max, quality);
     match result {
         Some(r) => serde_wasm_bindgen::to_value(&r).unwrap(),
         None => JsValue::NULL,

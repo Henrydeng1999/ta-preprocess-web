@@ -160,14 +160,15 @@ export function estimate_irf_wasm(time, wl, ta, n_wl, n_time, n_wl_avg) {
  * @param {number} n_exp
  * @param {number} t_fit_min
  * @param {number} t_fit_max
+ * @param {number} quality
  * @returns {any}
  */
-export function fit_multi_exp(time, signal, n_exp, t_fit_min, t_fit_max) {
+export function fit_multi_exp(time, signal, n_exp, t_fit_min, t_fit_max, quality) {
     const ptr0 = passArrayF64ToWasm0(time, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArrayF64ToWasm0(signal, wasm.__wbindgen_malloc);
     const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.fit_multi_exp(ptr0, len0, ptr1, len1, n_exp, t_fit_min, t_fit_max);
+    const ret = wasm.fit_multi_exp(ptr0, len0, ptr1, len1, n_exp, t_fit_min, t_fit_max, quality);
     return ret;
 }
 

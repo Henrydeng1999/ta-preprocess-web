@@ -802,6 +802,14 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
               <option value="log">对数</option>
             </select>
           </div>
+          <div class="param-group">
+            <label>拟合速度/精度</label>
+            <select id="${divId}_fitQuality">
+              <option value="0" selected>快速</option>
+              <option value="1">标准</option>
+              <option value="2">高精度</option>
+            </select>
+          </div>
         </div>
         <div style="text-align:center;margin-bottom:16px;">
           <button class="btn btn-primary" onclick="doKineticFit('${baseName}', '${divId}')">🔬 开始拟合</button>
@@ -1493,10 +1501,10 @@ function applyManualChirp(baseName, divId) {
   }
 }
 
-async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
+async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax, quality) {
   try {
     var r = window.taWasm.fit_multi_exp(
-      new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
+      new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax, quality
     );
     if (!r) return null;
     return { params: Array.from(r.params), stdErrs: Array.from(r.std_errs), r2: r.r2, t_fit: Array.from(r.t_fit), y_fit: Array.from(r.y_fit) };
@@ -1530,6 +1538,7 @@ async function doKineticFit(baseName, divId) {
   const tFitMin = Math.max(parseFloat($(`${divId}_fitTMin`).value), data.timeArray[0]);
   const tFitMax = Math.min(parseFloat($(`${divId}_fitTMax`).value), data.timeArray[data.timeArray.length - 1]);
   const timeScale = $(`${divId}_fitTimeScale`).value;
+  const fitQuality = parseInt($(`${divId}_fitQuality`).value);
 
   if (wavelengths.length === 0) {
     $(`${divId}_fitResult`).innerHTML = '<div class="status status-error">请输入有效的探测波长</div>';
@@ -1579,7 +1588,7 @@ async function doKineticFit(baseName, divId) {
 
     let fitResult;
     try {
-      fitResult = await fitMultiExp(time, signal, nExp, tFitMin, tFitMax);
+      fitResult = await fitMultiExp(time, signal, nExp, tFitMin, tFitMax, fitQuality);
     } catch(e) {
       resultHtml += `<div style="color:#dc3545;margin-bottom:8px;">${actualWl.toFixed(1)}nm: ❌ ${escapeHtml(e.message)}</div>`;
       if (!_wasmReady) break;

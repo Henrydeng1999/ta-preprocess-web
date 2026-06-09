@@ -57,7 +57,13 @@ fn main() {
             // 4. 啁啾校正 - 半高点法
             println!("\n--- Step 4: Chirp Correction (half-height) ---");
             let t0 = Instant::now();
-            let chirp_result = ta_wasm::chirp::chirp_correction_half_height(&d.time_array, &cropped.wavelength_array, &baselined);
+            let chirp_opts = ta_wasm::chirp::ChirpOpts::default();
+            let chirp_result = ta_wasm::chirp::chirp_correction_half_height(
+                &d.time_array,
+                &cropped.wavelength_array,
+                &baselined,
+                &chirp_opts,
+            );
             let chirp_time = t0.elapsed();
             println!("✓ Chirp correction OK ({:.2?})", chirp_time);
             if let Some(ref coeffs) = chirp_result.coeffs {
@@ -76,7 +82,14 @@ fn main() {
             println!("  Probe wavelength: {:.1} nm", probe_wl);
 
             let t0 = Instant::now();
-            let fit_2exp = ta_wasm::fitting::fit_multi_exp(&d.time_array, signal, 2, -1.0, d.time_array.last().unwrap_or(&1000.0).clone());
+            let fit_2exp = ta_wasm::fitting::fit_multi_exp(
+                &d.time_array,
+                signal,
+                2,
+                -1.0,
+                d.time_array.last().unwrap_or(&1000.0).clone(),
+                1,
+            );
             let fit_time = t0.elapsed();
             match fit_2exp {
                 Some(r) => {
