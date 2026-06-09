@@ -23,3 +23,9 @@ Thumbs.db
 .idea/
 .vscode/
 *.code-workspace
+
+# === Local agent/tool state ===
+.claude/
+
+# === Local notes / references ===
+*Transient absorption spectroscopy_cleaned.md
