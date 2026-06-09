@@ -20,185 +20,43 @@ function _unflattenTA(flat, nWl, nTime) {
   return result;
 }
 
-function _wasmAsync(fn) {
-  return new Promise(function(resolve) {
-    setTimeout(function() {
-      var result = fn();
-      resolve(result);
-    }, 0);
-  });
+function _wasmChirpResult(ret, nWl, nTime) {
+  if (!ret || ret.error) return null;
+  var ta2d = ret.ta_2d;
+  if (ta2d === undefined || ta2d === null) return null;
+  return { TA2D: _unflattenTA(ta2d, nWl, nTime), coeffs: ret.coeffs, t0PerWl: ret.t0_per_wl };
 }
 
-function _wasmChirpResult(ret, nWl, nTime) {
-  if (!ret || ret.error) {
-    console.warn('[WASM] chirp error:', ret ? ret.error : 'null return');
-    return null;
+(async function initWasm() {
+  try {
+    const mod = await import('./pkg/ta_wasm.js');
+    await mod.default();
+    window.taWasm = {
+      parse_csv_wasm: mod.parse_csv_wasm,
+      parse_ufs_wasm: mod.parse_ufs_wasm,
+      crop_wavelength: mod.crop_wavelength,
+      baseline_subtraction: mod.baseline_subtraction,
+      chirp_correction_half_height: mod.chirp_correction_half_height,
+      chirp_correction_global: mod.chirp_correction_global,
+      apply_chirp_with_coeffs: mod.apply_chirp_with_coeffs,
+      fit_multi_exp: mod.fit_multi_exp,
+      polyfit_wasm: mod.polyfit_wasm,
+      polyval_wasm: mod.polyval_wasm,
+      remove_cpm_wasm: mod.remove_cpm_wasm,
+      deconvolve_irf_wasm: mod.deconvolve_irf_wasm,
+      greet: mod.greet
+    };
+    console.log('[WASM] TA core loaded:', mod.greet());
+    window.dispatchEvent(new CustomEvent('wasm-ready'));
+  } catch(e) {
+    console.warn('[WASM] Load failed, JS fallback active:', e);
   }
-  var ta2d = ret.ta_2d;
-  if (ta2d === undefined || ta2d === null) {
-    console.warn('[WASM] chirp: ta_2d is missing in return', Object.keys(ret));
-    return null;
-  }
-  var taAfter = _unflattenTA(ta2d, nWl, nTime);
-  return {
-    TA2D: taAfter,
-    coeffs: ret.coeffs,
-    t0PerWl: ret.t0_per_wl
-  };
-}
+})();
 
 window.addEventListener('wasm-ready', function() {
   _wasmReady = true;
   _useWasm = typeof window.taWasm !== 'undefined';
-  if (_useWasm) {
-    _origPolyfit = polyfit;
-    _origPolyval = polyval;
-    _origFitMultiExp = fitMultiExp;
-    _origChirpHalfHeight = chirpCorrectionHalfHeight;
-    _origChirpGlobal = chirpCorrectionGlobal;
-    _origApplyChirpShift = applyChirpShift;
-
-    polyfit = function(x, y, order) {
-      try {
-        return Array.from(window.taWasm.polyfit_wasm(new Float64Array(x), new Float64Array(y), order));
-      } catch(e) {
-        console.warn('[WASM] polyfit fallback:', e);
-        return _origPolyfit(x, y, order);
-      }
-    };
-
-    polyval = function(coeffs, x) {
-      try {
-        return Array.from(window.taWasm.polyval_wasm(new Float64Array(coeffs), new Float64Array(x)));
-      } catch(e) {
-        console.warn('[WASM] polyval fallback:', e);
-        return _origPolyval(coeffs, x);
-      }
-    };
-
-    fitMultiExp = function(time, signal, nExp, tFitMin, tFitMax) {
-      try {
-        var result = window.taWasm.fit_multi_exp(
-          new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
-        );
-        if (!result) return _origFitMultiExp(time, signal, nExp, tFitMin, tFitMax);
-        return result;
-      } catch(e) {
-        console.warn('[WASM] fitMultiExp fallback:', e);
-        return _origFitMultiExp(time, signal, nExp, tFitMin, tFitMax);
-      }
-    };
-
-    applyChirpShift = function(time, wl, ta, coeffs) {
-      try {
-        var flat = _flattenTA(ta);
-        var ret = window.taWasm.apply_chirp_with_coeffs(
-          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length, new Float64Array(coeffs)
-        );
-        if (!ret || ret.length === 0) {
-          console.warn('[WASM] applyChirpShift: empty return, fallback to JS');
-          return _origApplyChirpShift(time, wl, ta, coeffs);
-        }
-        var result = _unflattenTA(ret, ta.length, time.length);
-        if (!result || result.length === 0 || result[0].length === 0) {
-          console.warn('[WASM] applyChirpShift: unflatten failed, fallback to JS');
-          return _origApplyChirpShift(time, wl, ta, coeffs);
-        }
-        return result;
-      } catch(e) {
-        console.warn('[WASM] applyChirpShift fallback:', e);
-        return _origApplyChirpShift(time, wl, ta, coeffs);
-      }
-    };
-
-    chirpCorrectionHalfHeight = function(time, wl, ta, opts) {
-      try {
-        var flat = _flattenTA(ta);
-        var ret = window.taWasm.chirp_correction_half_height(
-          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-          opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
-          opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
-        );
-        var result = _wasmChirpResult(ret, ta.length, time.length);
-        if (!result) {
-          console.warn('[WASM] chirpHalfHeight fallback to JS');
-          return _origChirpHalfHeight(time, wl, ta, opts);
-        }
-        return result;
-      } catch(e) {
-        console.warn('[WASM] chirpHalfHeight fallback:', e);
-        return _origChirpHalfHeight(time, wl, ta, opts);
-      }
-    };
-
-    chirpCorrectionGlobal = function(time, wl, ta, opts) {
-      return _wasmAsync(function() {
-        try {
-          var flat = _flattenTA(ta);
-          var ret = window.taWasm.chirp_correction_global(
-            new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-            opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
-            opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
-          );
-          var result = _wasmChirpResult(ret, ta.length, time.length);
-          if (!result) {
-            console.warn('[WASM] chirpGlobal fallback to JS');
-            return _origChirpGlobal(time, wl, ta, opts);
-          }
-          return result;
-        } catch(e) {
-          console.warn('[WASM] chirpGlobal fallback:', e);
-          return _origChirpGlobal(time, wl, ta, opts);
-        }
-      });
-    };
-
-    var _origRemoveCpm = removeCpm;
-    removeCpm = function(time, wl, ta, fitWindow, nBaseline) {
-      try {
-        var flat = _flattenTA(ta);
-        var ret = window.taWasm.remove_cpm_wasm(
-          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-          fitWindow, nBaseline
-        );
-        if (ret && ret.ta_2d) {
-          return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length) };
-        }
-        console.warn('[WASM] removeCpm fallback to JS');
-        return _origRemoveCpm(time, wl, ta, fitWindow, nBaseline);
-      } catch(e) {
-        console.warn('[WASM] removeCpm fallback:', e);
-        return _origRemoveCpm(time, wl, ta, fitWindow, nBaseline);
-      }
-    };
-
-    var _origEstimateIrf = estimateIrf;
-    estimateIrf = function(time, ta, nWlAvg) {
-      // IRF estimation is fast, keep JS version
-      return _origEstimateIrf(time, ta, nWlAvg);
-    };
-
-    var _origDeconvolveIrf = deconvolveIrf;
-    deconvolveIrf = function(time, wl, ta, irfFwhm, nIter) {
-      try {
-        var flat = _flattenTA(ta);
-        var ret = window.taWasm.deconvolve_irf_wasm(
-          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
-          irfFwhm, nIter
-        );
-        if (ret && ret.ta_2d) {
-          return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length), irfFwhm: ret.irf_fwhm };
-        }
-        console.warn('[WASM] deconvolveIrf fallback to JS');
-        return _origDeconvolveIrf(time, wl, ta, irfFwhm, nIter);
-      } catch(e) {
-        console.warn('[WASM] deconvolveIrf fallback:', e);
-        return _origDeconvolveIrf(time, wl, ta, irfFwhm, nIter);
-      }
-    };
-
-    console.log('[WASM] Patched: polyfit, polyval, fitMultiExp, applyChirpShift, chirpCorrectionHalfHeight, chirpCorrectionGlobal, removeCpm, deconvolveIrf');
-  }
+  console.log('[WASM] Ready, acceleration:', _useWasm);
 });
 
 function $(id) { return document.getElementById(id); }
@@ -546,6 +404,11 @@ function computeSnrPerWl(time, ta, nBaseline) {
 }
 
 function polyfit(x, y, order) {
+  if (_useWasm) {
+    try {
+      return Array.from(window.taWasm.polyfit_wasm(new Float64Array(x), new Float64Array(y), order));
+    } catch(e) { console.warn('[WASM] polyfit fallback:', e); }
+  }
   const n = x.length;
   const m = order + 1;
   const A = [];
@@ -584,6 +447,11 @@ function polyfit(x, y, order) {
 }
 
 function polyval(coeffs, x) {
+  if (_useWasm) {
+    try {
+      return Array.from(window.taWasm.polyval_wasm(new Float64Array(coeffs), new Float64Array(x)));
+    } catch(e) { console.warn('[WASM] polyval fallback:', e); }
+  }
   return x.map(xi => {
     let val = 0;
     for (let i = 0; i < coeffs.length; i++) val += coeffs[i] * Math.pow(xi, i);
@@ -696,6 +564,18 @@ function findT0HalfHeight(time, ta, searchRange) {
 }
 
 function applyChirpShift(time, wl, ta, coeffs) {
+  if (_useWasm) {
+    try {
+      var flat = _flattenTA(ta);
+      var ret = window.taWasm.apply_chirp_with_coeffs(
+        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length, new Float64Array(coeffs)
+      );
+      if (ret && ret.length > 0) {
+        var result = _unflattenTA(ret, ta.length, time.length);
+        if (result && result.length > 0 && result[0].length > 0) return { TA2D: result };
+      }
+    } catch(e) { console.warn('[WASM] applyChirpShift fallback:', e); }
+  }
   // Use λ⁻² for fitting (physical dispersion: t₀ ∝ λ⁻²)
   const invL2 = wl.map(w => 1.0 / (w * w));
   const t0Fitted = polyval(coeffs, invL2);
@@ -779,6 +659,18 @@ async function nelderMead(costFunc, x0, maxIter = 3000) {
 }
 
 function chirpCorrectionHalfHeight(time, wl, ta, opts) {
+  if (_useWasm) {
+    try {
+      var flat = _flattenTA(ta);
+      var ret = window.taWasm.chirp_correction_half_height(
+        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+        opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+        opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
+      );
+      var result = _wasmChirpResult(ret, ta.length, time.length);
+      if (result) return result;
+    } catch(e) { console.warn('[WASM] chirpHalfHeight fallback:', e); }
+  }
   const snrPerWl = computeSnrPerWl(time, ta, opts.nBaseline);
   const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
   const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
@@ -795,6 +687,20 @@ function chirpCorrectionHalfHeight(time, wl, ta, opts) {
 }
 
 async function chirpCorrectionGlobal(time, wl, ta, opts) {
+  if (_useWasm) {
+    try {
+      var flat = _flattenTA(ta);
+      var ret = await new Promise(resolve => setTimeout(() => {
+        resolve(window.taWasm.chirp_correction_global(
+          new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+          opts.searchRange[0], opts.searchRange[1], opts.polyOrder,
+          opts.snrThreshold, opts.nIter, opts.nSigma, opts.nBaseline
+        ));
+      }, 0));
+      var result = _wasmChirpResult(ret, ta.length, time.length);
+      if (result) return result;
+    } catch(e) { console.warn('[WASM] chirpGlobal fallback:', e); }
+  }
   const snrPerWl = computeSnrPerWl(time, ta, opts.nBaseline);
   const t0PerWl = findT0HalfHeight(time, ta, opts.searchRange);
   const t0ForFit = t0PerWl.map((v, i) => snrPerWl[i] < opts.snrThreshold ? NaN : v);
@@ -913,6 +819,16 @@ async function chirpCorrectionGlobal(time, wl, ta, opts) {
 
 // ==================== CPM Removal ====================
 async function removeCpm(time, wl, ta, fitWindow, nBaseline) {
+  if (_useWasm) {
+    try {
+      var flat = _flattenTA(ta);
+      var ret = window.taWasm.remove_cpm_wasm(
+        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+        fitWindow, nBaseline
+      );
+      if (ret && ret.ta_2d) return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length) };
+    } catch(e) { console.warn('[WASM] removeCpm fallback:', e); }
+  }
   // Find t=0 index
   let t0Idx = 0, minAbsT = Infinity;
   for (let i = 0; i < time.length; i++) {
@@ -1103,6 +1019,16 @@ function estimateIrf(time, ta, nWlAvg) {
 }
 
 async function deconvolveIrf(time, wl, ta, irfFwhm, nIter) {
+  if (_useWasm) {
+    try {
+      var flat = _flattenTA(ta);
+      var ret = window.taWasm.deconvolve_irf_wasm(
+        new Float64Array(time), new Float64Array(wl), new Float64Array(flat), ta.length, time.length,
+        irfFwhm, nIter
+      );
+      if (ret && ret.ta_2d) return { TA2D: _unflattenTA(ret.ta_2d, ta.length, time.length), irfFwhm: ret.irf_fwhm };
+    } catch(e) { console.warn('[WASM] deconvolveIrf fallback:', e); }
+  }
   const nTime = time.length;
   if (nTime === 0 || ta.length === 0) return { TA2D: ta, irfFwhm };
 
@@ -2285,6 +2211,14 @@ function levenbergMarquardt(tFit, sFit, nExp, initialParams, maxIter) {
 }
 
 async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
+  if (_useWasm) {
+    try {
+      var result = window.taWasm.fit_multi_exp(
+        new Float64Array(time), new Float64Array(signal), nExp, tFitMin, tFitMax
+      );
+      if (result) return result;
+    } catch(e) { console.warn('[WASM] fitMultiExp fallback:', e); }
+  }
   const fitIdx = [];
   for (let j = 0; j < time.length; j++) {
     if (time[j] >= tFitMin && time[j] <= tFitMax && !isNaN(signal[j])) {
