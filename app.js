@@ -2417,8 +2417,15 @@ async function fitMultiExp(time, signal, nExp, tFitMin, tFitMax) {
     }
   }
 
-  // Combine progressive + grid guesses, progressive first (higher priority)
-  const allGuesses = [...progressiveGuesses, ...gridGuesses];
+  // Add negated-amplitude variants of grid guesses for negative-dominant signals (GSB)
+  const gridNegated = gridGuesses.map(x0 => {
+    const neg = x0.slice();
+    for (let k = 0; k < nExp; k++) neg[k * 2] = -neg[k * 2];
+    return neg;
+  });
+
+  // Combine: progressive first (quality), then grid + negated variants
+  const allGuesses = [...progressiveGuesses, ...gridGuesses, ...gridNegated];
 
   let bestResult = null;
   let bestChi2 = Infinity;

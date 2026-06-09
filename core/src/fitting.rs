@@ -438,45 +438,31 @@ fn fit_single_exp_initial(t: &[f64], y: &[f64]) -> Vec<f64> {
     // Strategy D: Short tau
     let guess_d = vec![y_range * 0.8, log_t_min + 0.3 * log_range, y_last * 0.5];
 
-    // Try all guesses, pick best
+    // Try all guesses with quick LM (NM too slow just for initial guess)
     let guesses = vec![guess_a, guess_b, guess_c, guess_d];
     let mut best = guesses[0].clone();
     let mut best_chi2 = f64::INFINITY;
 
     for x0 in &guesses {
-        let result = nelder_mead(
-            &|p: &[f64]| {
-                let mut ss = 0.0;
-                for i in 0..t.len() {
-                    let r = eval_model_log(p, t[i], 1) - y[i];
-                    ss += r * r;
-                }
-                ss
-            },
-            x0,
-            1500,
-        );
-        if result.f_val < best_chi2 {
-            best_chi2 = result.f_val;
-            best = result.x;
-        }
-    }
-
-    // LM refine
-    if let Some((params, chi2, _)) = levenberg_marquardt_log(t, y, 1, &best, 300) {
-        if chi2 < best_chi2 {
-            best = params;
+        if let Some((params, chi2, _)) = levenberg_marquardt_log(t, y, 1, x0, 200) {
+            if chi2 < best_chi2 {
+                best_chi2 = chi2;
+                best = params;
+            }
         }
     }
 
     best
 }
 
+/// Returns (progressive_guesses, grid_guesses).
+/// Progressive guesses are derived from sequential residual decomposition.
+/// Grid guesses are uniform tau-spacing backups, including negated-amplitude variants.
 fn generate_initial_guesses(
     t: &[f64],
     y: &[f64],
     n_exp: usize,
-) -> Vec<Vec<f64>> {
+) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let t_max = t[t.len() - 1];
     let t_min = t[0].max(0.01);
     let log_t_min = t_min.ln();
@@ -489,43 +475,36 @@ fn generate_initial_guesses(
         - y.iter().fold(f64::INFINITY, |a, &b| a.min(b));
     let amp_est = y_first - y_last;
 
-    let mut all_guesses = Vec::new();
+    let mut progressive = Vec::new();
 
     // ===== Progressive (Origin-style) guesses =====
-    // Step 1: Fit single exponential
     let single_params = fit_single_exp_initial(t, y);
 
     if n_exp == 1 {
-        all_guesses.push(single_params.clone());
+        progressive.push(single_params.clone());
     } else {
-        // Step 2: Compute residuals from single exp fit
         let residuals: Vec<f64> = t.iter()
             .enumerate()
             .map(|(i, &ti)| y[i] - eval_model_log(&single_params, ti, 1))
             .collect();
 
-        // Fit single exp to residuals
         let res_params = fit_single_exp_initial(t, &residuals);
 
-        // Combine for 2-exp
         if n_exp >= 2 {
             let a1 = single_params[0];
             let lt1 = single_params[1];
             let a2 = res_params[0];
             let lt2 = res_params[1];
-            let y0 = single_params[2];
+            let y0 = single_params[2] + res_params[2];
 
-            // Sort by tau
             if lt1 <= lt2 {
-                all_guesses.push(vec![a1, lt1, a2, lt2, y0]);
+                progressive.push(vec![a1, lt1, a2, lt2, y0]);
             } else {
-                all_guesses.push(vec![a2, lt2, a1, lt1, y0]);
+                progressive.push(vec![a2, lt2, a1, lt1, y0]);
             }
-            // Also try swapped
-            all_guesses.push(vec![a2, lt2, a1, lt1, y0]);
+            progressive.push(vec![a2, lt2, a1, lt1, y0]);
         }
 
-        // Step 3: For 3+ exp, decompose further
         if n_exp >= 3 {
             let residuals2: Vec<f64> = t.iter()
                 .enumerate()
@@ -547,14 +526,11 @@ fn generate_initial_guesses(
                 let lt1 = single_params[1];
                 let a2 = res_params[0];
                 let lt2 = res_params[1];
-                let y0 = single_params[2];
+                // Accumulate y0 from all residual stages
+                let y0 = single_params[2] + res_params[2];
                 let a3 = if res2_amp.abs() > 1e-15 { res2_amp } else { res2_range * 0.3 };
 
-                let mut components = vec![
-                    (a1, lt1),
-                    (a2, lt2),
-                    (a3, *log_tau3),
-                ];
+                let mut components = vec![(a1, lt1), (a2, lt2), (a3, *log_tau3)];
                 components.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
                 let mut x0 = Vec::new();
@@ -563,7 +539,7 @@ fn generate_initial_guesses(
                     x0.push(*lt);
                 }
                 x0.push(y0);
-                all_guesses.push(x0);
+                progressive.push(x0);
             }
         }
     }
@@ -591,38 +567,39 @@ fn generate_initial_guesses(
             vec![0.08, 0.25, 0.5, 0.75, 0.95],
         ],
         _ => {
-            let mut fracs = Vec::new();
-            for k in 0..n_exp {
-                fracs.push((k as f64 + 0.5) / n_exp as f64);
-            }
+            let fracs = (0..n_exp).map(|k| (k as f64 + 0.5) / n_exp as f64).collect();
             vec![fracs]
         }
     };
 
     let amp_strategies: Vec<Box<dyn Fn(usize) -> f64>> = vec![
-        Box::new(|k: usize| -> f64 {
+        Box::new(move |k: usize| -> f64 {
             if k == 0 { amp_est } else { y_range / n_exp as f64 }
         }),
-        Box::new(|_: usize| -> f64 { y_range / n_exp as f64 }),
-        Box::new(|k: usize| -> f64 { y_range * (0.5_f64.powi(k as i32)) }),
+        Box::new(move |_: usize| -> f64 { y_range / n_exp as f64 }),
+        Box::new(move |k: usize| -> f64 { y_range * (0.5_f64.powi(k as i32 + 1)) }),
     ];
 
+    let mut grid = Vec::new();
     for tau_fracs in &tau_strategies {
         for amp_fn in &amp_strategies {
             let mut x0 = Vec::new();
             for k in 0..n_exp {
-                let frac = tau_fracs[k];
-                let log_tau = log_t_min + frac * log_range;
-                let amp = amp_fn(k);
-                x0.push(amp);
-                x0.push(log_tau);
+                x0.push(amp_fn(k));
+                x0.push(log_t_min + tau_fracs[k] * log_range);
             }
             x0.push(y_last * 0.5);
-            all_guesses.push(x0);
+            // Also push negated-amplitude variant for negative-dominant signals (GSB)
+            let mut x0_neg = x0.clone();
+            for k in 0..n_exp {
+                x0_neg[k * 2] = -x0_neg[k * 2];
+            }
+            grid.push(x0);
+            grid.push(x0_neg);
         }
     }
 
-    all_guesses
+    (progressive, grid)
 }
 
 // ==================== Multi-Exponential Fitting ====================
@@ -654,27 +631,46 @@ pub fn fit_multi_exp(
         return None;
     }
 
-    // Generate multiple initial guesses
-    let all_guesses = generate_initial_guesses(&t_fit, &s_fit, n_exp);
+    let (progressive, grid) = generate_initial_guesses(&t_fit, &s_fit, n_exp);
 
-    let mut best_log_params: Option<Vec<f64>> = None;
+    let cost_fn = |p: &[f64]| -> f64 {
+        let mut ss = 0.0;
+        for i in 0..t_fit.len() {
+            let r = eval_model_log(p, t_fit[i], n_exp) - s_fit[i];
+            ss += r * r;
+        }
+        ss
+    };
+
+    let mut best_coarse: Option<Vec<f64>> = None;
     let mut best_chi2 = f64::INFINITY;
-    let mut best_std_errs: Option<Vec<f64>> = None;
 
-    for x0 in all_guesses {
-        if let Some((log_params, chi2, std_errs)) =
-            levenberg_marquardt_log(&t_fit, &s_fit, n_exp, &x0, 1000)
-        {
+    // Progressive guesses: NM coarse search → LM refinement
+    for x0 in &progressive {
+        let nm = nelder_mead(&cost_fn, x0, 1000);
+        if let Some((params, chi2, _)) = levenberg_marquardt_log(&t_fit, &s_fit, n_exp, &nm.x, 300) {
             if chi2 < best_chi2 {
-                best_log_params = Some(log_params);
                 best_chi2 = chi2;
-                best_std_errs = Some(std_errs);
+                best_coarse = Some(params);
             }
         }
     }
 
-    let log_params = best_log_params?;
-    let std_errs_log = best_std_errs?;
+    // Grid guesses: lighter NM → LM (fallback)
+    for x0 in &grid {
+        let nm = nelder_mead(&cost_fn, x0, 400);
+        if let Some((params, chi2, _)) = levenberg_marquardt_log(&t_fit, &s_fit, n_exp, &nm.x, 200) {
+            if chi2 < best_chi2 {
+                best_chi2 = chi2;
+                best_coarse = Some(params);
+            }
+        }
+    }
+
+    // Final polish with full LM to get accurate std_errs
+    let coarse = best_coarse?;
+    let (log_params, final_chi2, std_errs_log) =
+        levenberg_marquardt_log(&t_fit, &s_fit, n_exp, &coarse, 1000)?;
 
     // Convert from log(tau) to actual tau for output
     let mut sorted: Vec<(f64, f64, f64, f64)> = (0..n_exp)
@@ -703,7 +699,7 @@ pub fn fit_multi_exp(
     let s_mean: f64 = s_fit.iter().sum::<f64>() / s_fit.len() as f64;
     let ss_tot: f64 = s_fit.iter().map(|v| (v - s_mean).powi(2)).sum();
     let r2 = if ss_tot > 1e-15 {
-        1.0 - best_chi2 / ss_tot
+        1.0 - final_chi2 / ss_tot
     } else {
         0.0
     };
