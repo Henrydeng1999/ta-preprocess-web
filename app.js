@@ -534,6 +534,68 @@ function makeHeatmapData(time, wl, ta, tRange) {
 }
 
 let cancelProcessing = false;
+let cancelGlobalKineticFit = false;
+
+function ensureGlobalFitControls() {
+  if ($('globalFitControls')) return;
+  const html = `
+    <div class="card" id="globalFitControls" style="display:none;">
+      <h2>🔬 全部动力学拟合</h2>
+      <p style="font-size:13px;color:#888;margin-bottom:12px;">可先设置统一拟合选项并应用到全部文件，再执行批量拟合或导出汇总结果。</p>
+      <div class="fit-controls" style="margin-bottom:12px;">
+        <div class="params" style="margin-bottom:12px;">
+          <div class="param-group">
+            <label>探测波长 (逗号分隔, nm)</label>
+            <input type="text" id="globalFitWlInput" value="">
+          </div>
+          <div class="param-group">
+            <label>指数个数</label>
+            <select id="globalFitNExp">
+              <option value="1">1指数</option>
+              <option value="2" selected>2指数</option>
+              <option value="3">3指数</option>
+              <option value="4">4指数</option>
+              <option value="5">5指数</option>
+            </select>
+          </div>
+          <div class="param-group">
+            <label>时间轴标度</label>
+            <select id="globalFitTimeScale">
+              <option value="linear">线性</option>
+              <option value="log" selected>对数</option>
+            </select>
+          </div>
+          <div class="param-group">
+            <label>拟合速度/精度</label>
+            <select id="globalFitQuality">
+              <option value="0" selected>快速</option>
+              <option value="1">标准</option>
+              <option value="2">高精度</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <button class="btn" id="globalFitApplyBtn" onclick="applyGlobalFitOptionsToAll()">应用到全部文件</button>
+          <button class="btn btn-primary" id="globalFitBtn" onclick="doAllKineticFits()">全部开始拟合</button>
+          <button class="btn" id="globalFitCancelBtn" style="display:none;background:#dc3545;color:white;" onclick="cancelGlobalKineticFit=true;">取消批量拟合</button>
+          <button class="btn btn-download" id="globalFitSummaryBtn" onclick="downloadAllFitSummaryCSV()">导出全部拟合汇总 CSV</button>
+          <button class="btn btn-download" id="globalZipProcessedBtn" onclick="downloadAllByTypeZip('processed_csv')">打包全部处理后 CSV</button>
+          <button class="btn btn-download" id="globalZipFitBtn" onclick="downloadAllByTypeZip('fit_csv')">打包全部拟合参数 CSV</button>
+          <span id="globalFitStatus" style="font-size:13px;color:#999;"></span>
+        </div>
+      </div>
+    </div>`;
+  $('resultsArea').insertAdjacentHTML('afterbegin', html);
+}
+
+function updateGlobalFitControls() {
+  const panel = $('globalFitControls');
+  if (!panel) return;
+  const count = document.querySelectorAll('#resultsArea .card[data-fit-card="1"]').length;
+  panel.style.display = count > 0 ? '' : 'none';
+  const status = $('globalFitStatus');
+  if (status && count > 0) status.textContent = `当前可批量拟合 ${count} 个文件`;
+}
 
 async function processAll() {
   if (!_wasmReady) { setStatus('❌ WASM 核心尚未加载，请刷新页面重试', 'error'); return; }
@@ -561,6 +623,9 @@ async function processAll() {
   };
 
   $('resultsArea').innerHTML = '';
+  ensureGlobalFitControls();
+  if ($('globalFitWlInput')) $('globalFitWlInput').value = probeWlStr;
+  updateGlobalFitControls();
   cancelProcessing = false;
   $('processBtn').disabled = true;
   $('cancelBtn').style.display = 'inline-block';
@@ -723,7 +788,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   timeDiffs.sort((a, b) => a - b);
   const medianDt = timeDiffs.length > 0 ? timeDiffs[Math.floor(timeDiffs.length / 2)] : 0.5;
 
-  let html = `<div class="card" id="${divId}">
+  let html = `<div class="card" id="${divId}" data-fit-card="1" data-base-name="${baseName}" data-div-id="${divId}">
     <h2>📄 ${escapeHtml(fileName)}</h2>
     <p style="font-size:13px;color:#888;">波长: ${wl[0].toFixed(1)} ~ ${wl[wl.length-1].toFixed(1)} nm | 时间: ${time[0].toFixed(3)} ~ ${time[time.length-1].toFixed(3)} ps | 数据: ${wl.length}×${time.length}</p>
     <div class="tabs">
@@ -799,7 +864,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
             <label>时间轴标度</label>
             <select id="${divId}_fitTimeScale" onchange="updateFitTimeScale('${divId}')">
               <option value="linear">线性</option>
-              <option value="log">对数</option>
+              <option value="log" selected>对数</option>
             </select>
           </div>
           <div class="param-group">
@@ -851,6 +916,7 @@ function renderResults(fileName, time, wl, taBefore, taAfter, coeffs, t0PerWl, c
   </div>`;
 
   $('resultsArea').insertAdjacentHTML('beforeend', html);
+  updateGlobalFitControls();
 
   const tRange = [tViewMin, tViewMax];
 
@@ -1129,29 +1195,38 @@ function switchTab(el, divId, tabName) {
   setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
 }
 
-function triggerDownload(content, filename, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
+function triggerBlobDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  a.click(); URL.revokeObjectURL(url);
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-function downloadJSON(baseName) {
-  const data = window[`data_${baseName}`];
-  if (!data) return;
-  const json = JSON.stringify({
-    time_array: data.timeArray,
-    wavelength_array: data.wavelengthArray,
-    TA_2D_data: data.TA2D,
-    chirp_coeffs: data.coeffs
-  }, null, 2);
-  triggerDownload(json, `${baseName}_processed.json`, 'application/json');
+function triggerDownload(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  triggerBlobDownload(blob, filename);
 }
 
-function downloadCSV(baseName) {
+function buildProcessedJSON(baseName) {
   const data = window[`data_${baseName}`];
-  if (!data) return;
+  if (!data) return null;
+  return {
+    filename: `${baseName}_processed.json`,
+    mimeType: 'application/json',
+    content: JSON.stringify({
+      time_array: data.timeArray,
+      wavelength_array: data.wavelengthArray,
+      TA_2D_data: data.TA2D,
+      chirp_coeffs: data.coeffs
+    }, null, 2)
+  };
+}
+
+function buildProcessedCSV(baseName) {
+  const data = window[`data_${baseName}`];
+  if (!data) return null;
   const time = data.timeArray;
   const wl = data.wavelengthArray;
   const ta = data.TA2D;
@@ -1159,12 +1234,12 @@ function downloadCSV(baseName) {
   for (let i = 0; i < wl.length; i++) {
     csv += wl[i].toFixed(2) + ',' + ta[i].map(v => isNaN(v) ? '' : v.toExponential(8)).join(',') + '\n';
   }
-  triggerDownload(csv, `${baseName}_processed.csv`, 'text/csv');
+  return { filename: `${baseName}_processed.csv`, mimeType: 'text/csv', content: csv };
 }
 
-function downloadASCII(baseName) {
+function buildProcessedASCII(baseName) {
   const data = window[`data_${baseName}`];
-  if (!data) return;
+  if (!data) return null;
   const time = data.timeArray;
   const wl = data.wavelengthArray;
   const ta = data.TA2D;
@@ -1178,12 +1253,12 @@ function downloadASCII(baseName) {
     }
     txt += '\n';
   }
-  triggerDownload(txt, `${baseName}_processed.dat`, 'text/plain');
+  return { filename: `${baseName}_processed.dat`, mimeType: 'text/plain', content: txt };
 }
 
-function downloadTSV(baseName) {
+function buildProcessedTSV(baseName) {
   const data = window[`data_${baseName}`];
-  if (!data) return;
+  if (!data) return null;
   const time = data.timeArray;
   const wl = data.wavelengthArray;
   const ta = data.TA2D;
@@ -1191,7 +1266,110 @@ function downloadTSV(baseName) {
   for (let i = 0; i < wl.length; i++) {
     tsv += wl[i].toFixed(2) + '\t' + ta[i].map(v => isNaN(v) ? '' : v.toExponential(8)).join('\t') + '\n';
   }
-  triggerDownload(tsv, `${baseName}_processed.tsv`, 'text/tab-separated-values');
+  return { filename: `${baseName}_processed.tsv`, mimeType: 'text/tab-separated-values', content: tsv };
+}
+
+function buildFitCSV(baseName) {
+  const results = window[`fitResults_${baseName}`];
+  if (!results || results.length === 0) return null;
+
+  const maxNExp = Math.max(...results.map(r => r.nExp));
+  const headers = ['波长(nm)', '指数个数', 'R²'];
+  for (let k = 0; k < maxNExp; k++) {
+    headers.push(`τ${k + 1}(ps)`, `τ${k + 1}标准差`, `A${k + 1}(mOD)`, `A${k + 1}标准差(mOD)`);
+  }
+  headers.push('y0(mOD)', 'y0标准差(mOD)', '异常标记');
+
+  let csv = headers.join(',') + '\n';
+  for (const r of results) {
+    const row = [r.wavelength.toFixed(2), r.nExp, r.r2.toFixed(6)];
+    for (let k = 0; k < maxNExp; k++) {
+      if (k < r.nExp) {
+        const tau = r.params[k * 2 + 1];
+        const A = r.params[k * 2] * 1000;
+        const hasStd = r.stdErrs && r.stdErrs.length > 0;
+        const tauStd = hasStd ? r.stdErrs[k * 2 + 1] : '';
+        const aStd = hasStd ? r.stdErrs[k * 2] * 1000 : '';
+        row.push(tau.toFixed(6), hasStd ? tauStd.toFixed(6) : '', A.toFixed(4), hasStd ? aStd.toFixed(4) : '');
+      } else {
+        row.push('', '', '', '');
+      }
+    }
+    const offset = r.params[r.params.length - 1] * 1000;
+    const hasStd = r.stdErrs && r.stdErrs.length > 0;
+    const offStd = hasStd ? r.stdErrs[r.stdErrs.length - 1] * 1000 : '';
+    row.push(offset.toFixed(4), hasStd ? offStd.toFixed(4) : '', (r.flags || []).join('; '));
+    csv += row.join(',') + '\n';
+  }
+
+  return { filename: `${baseName}_fit_results.csv`, mimeType: 'text/csv;charset=utf-8', content: '\uFEFF' + csv };
+}
+
+function buildFitRawCSV(baseName) {
+  const results = window[`fitResults_${baseName}`];
+  if (!results || results.length === 0) return null;
+
+  let csv = '\uFEFF';
+  for (const r of results) {
+    if (!r.tData || r.tData.length === 0) continue;
+    const wl = r.wavelength.toFixed(2);
+    const nData = r.tData.length;
+    const nFit = r.tFit ? r.tFit.length : 0;
+    const maxLen = Math.max(nData, nFit);
+
+    csv += `# ${wl} nm  R²=${r.r2.toFixed(6)}  nExp=${r.nExp}\n`;
+    csv += `时间(ps),原始ΔA(mOD),拟合ΔA(mOD)\n`;
+    for (let k = 0; k < maxLen; k++) {
+      const t = k < nData ? r.tData[k] : '';
+      const yd = k < nData ? (isNaN(r.yData[k]) ? '' : r.yData[k].toExponential(6)) : '';
+      const yf = k < nFit ? (isNaN(r.yFit[k]) ? '' : r.yFit[k].toExponential(6)) : '';
+      csv += `${t},${yd},${yf}\n`;
+    }
+    csv += '\n';
+  }
+
+  return { filename: `${baseName}_fit_raw_data.csv`, mimeType: 'text/csv;charset=utf-8', content: csv };
+}
+
+function buildSliceCSV(baseName) {
+  const data = window[`sliceData_${baseName}`];
+  if (!data) return null;
+
+  const headers = ['波长(nm)'];
+  for (const s of data.slices) headers.push(`${s.time.toFixed(2)}ps(mOD)`);
+
+  let csv = headers.join(',') + '\n';
+  for (let i = 0; i < data.wl.length; i++) {
+    const row = [data.wl[i].toFixed(2)];
+    for (const s of data.slices) row.push(s.spectrum[i]);
+    csv += row.join(',') + '\n';
+  }
+
+  return { filename: `${baseName}_spectral_slices.csv`, mimeType: 'text/csv;charset=utf-8', content: '\uFEFF' + csv };
+}
+
+function downloadJSON(baseName) {
+  const file = buildProcessedJSON(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
+}
+
+function downloadCSV(baseName) {
+  const file = buildProcessedCSV(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
+}
+
+function downloadASCII(baseName) {
+  const file = buildProcessedASCII(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
+}
+
+function downloadTSV(baseName) {
+  const file = buildProcessedTSV(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
 }
 
 function downloadFitCSV(baseName) {
@@ -1601,6 +1779,7 @@ async function doKineticFit(baseName, divId) {
 
     const tFine = fitResult.t_fit;
     const yFine = fitResult.y_fit.map(v => v * 1000);
+    const fitFlags = getFitFlags({ ...fitResult, nExp });
     traces.push({
       x: tFine, y: yFine,
       mode: 'lines', name: `${actualWl}nm 拟合`,
@@ -1650,10 +1829,11 @@ async function doKineticFit(baseName, divId) {
           ${paramRows}
         </table>
         <div style="margin-top:4px;font-size:12px;color:#333;">R² = ${fitResult.r2.toFixed(6)}</div>
+        ${fitFlags.length > 0 ? `<div style="margin-top:4px;font-size:12px;color:#b26a00;">异常标记: ${fitFlags.join(', ')}</div>` : ''}
         <div style="margin-top:2px;font-size:11px;color:#555;font-family:monospace;">${formula}</div>
       </div>`;
 
-    fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2, tData: tPlot, yData: sigPlot, tFit: tFine, yFit: yFine });
+    fitResultsStore.push({ wavelength: actualWl, nExp, params: fitResult.params, stdErrs: fitResult.stdErrs, r2: fitResult.r2, tData: tPlot, yData: sigPlot, tFit: tFine, yFit: yFine, flags: fitFlags });
   }
   } catch(e) {
     resultHtml += `<div class="status status-error">❌ 拟合中断：${escapeHtml(e.message)}</div>`;
@@ -1675,3 +1855,192 @@ async function doKineticFit(baseName, divId) {
   window[`fitResults_${baseName}`] = fitResultsStore;
   $(`${divId}_fitResult`).innerHTML = resultHtml || '<div class="status status-error">所有波长均无法拟合</div>';
 }
+
+function applyGlobalFitOptionsToAll() {
+  const cards = Array.from(document.querySelectorAll('#resultsArea .card[data-fit-card="1"]'));
+  const wlInput = $('globalFitWlInput')?.value ?? '';
+  const nExp = $('globalFitNExp')?.value ?? '2';
+  const timeScale = $('globalFitTimeScale')?.value ?? 'log';
+  const fitQuality = $('globalFitQuality')?.value ?? '0';
+
+  for (const card of cards) {
+    const divId = card.getAttribute('data-div-id');
+    const wlEl = $(`${divId}_fitWlInput`);
+    const nExpEl = $(`${divId}_fitNExp`);
+    const scaleEl = $(`${divId}_fitTimeScale`);
+    const qualityEl = $(`${divId}_fitQuality`);
+    if (wlEl) wlEl.value = wlInput;
+    if (nExpEl) nExpEl.value = nExp;
+    if (scaleEl) scaleEl.value = timeScale;
+    if (qualityEl) qualityEl.value = fitQuality;
+    updateFitTimeScale(divId);
+  }
+
+  const status = $('globalFitStatus');
+  if (status) status.textContent = `已将全局拟合选项应用到 ${cards.length} 个文件`;
+}
+
+function getFitFlags(result) {
+  const flags = [];
+  if (!result) return flags;
+  if (result.r2 < 0.98) flags.push('R2_LOW');
+  if (result.r2 < 0.9) flags.push('R2_VERY_LOW');
+  if (result.stdErrs && result.stdErrs.length === result.params.length) {
+    for (let k = 0; k < result.nExp; k++) {
+      const amp = Math.abs(result.params[k * 2]);
+      const tau = Math.abs(result.params[k * 2 + 1]);
+      const ampErr = Math.abs(result.stdErrs[k * 2] || 0);
+      const tauErr = Math.abs(result.stdErrs[k * 2 + 1] || 0);
+      if (amp > 1e-12 && ampErr > amp) flags.push(`A${k + 1}_UNSTABLE`);
+      if (tau > 1e-12 && tauErr > tau) flags.push(`T${k + 1}_UNSTABLE`);
+    }
+    for (let k = 1; k < result.nExp; k++) {
+      const prevTau = Math.abs(result.params[(k - 1) * 2 + 1]);
+      const tau = Math.abs(result.params[k * 2 + 1]);
+      if (prevTau > 1e-12 && tau / prevTau < 1.5) flags.push(`TAU_CLOSE_${k}_${k + 1}`);
+    }
+  }
+  return Array.from(new Set(flags));
+}
+
+async function doAllKineticFits() {
+  if (!_wasmReady) {
+    setStatus('❌ WASM 核心尚未加载，请刷新页面重试', 'error');
+    return;
+  }
+
+  const cards = Array.from(document.querySelectorAll('#resultsArea .card[data-fit-card="1"]'));
+  if (cards.length === 0) return;
+
+  const globalBtn = $('globalFitBtn');
+  const globalCancelBtn = $('globalFitCancelBtn');
+  const globalStatus = $('globalFitStatus');
+  cancelGlobalKineticFit = false;
+  if (globalBtn) globalBtn.disabled = true;
+  if (globalCancelBtn) globalCancelBtn.style.display = 'inline-block';
+
+  try {
+    for (let i = 0; i < cards.length; i++) {
+      if (cancelGlobalKineticFit) break;
+      const card = cards[i];
+      const baseName = card.getAttribute('data-base-name');
+      const divId = card.getAttribute('data-div-id');
+      const fileTitle = card.querySelector('h2')?.textContent?.trim() || baseName;
+      if (globalStatus) globalStatus.textContent = `正在拟合 ${i + 1}/${cards.length}: ${fileTitle}`;
+      await doKineticFit(baseName, divId);
+    }
+    if (globalStatus) {
+      globalStatus.textContent = cancelGlobalKineticFit
+        ? '批量拟合已取消'
+        : `全部拟合完成，共 ${cards.length} 个文件`;
+    }
+  } catch (e) {
+    if (globalStatus) globalStatus.textContent = `批量拟合中断: ${e.message}`;
+  } finally {
+    if (globalBtn) globalBtn.disabled = false;
+    if (globalCancelBtn) globalCancelBtn.style.display = 'none';
+    cancelGlobalKineticFit = false;
+  }
+}
+
+function downloadAllFitSummaryCSV() {
+  const cards = Array.from(document.querySelectorAll('#resultsArea .card[data-fit-card="1"]'));
+  const rows = [];
+  let maxNExp = 0;
+
+  for (const card of cards) {
+    const baseName = card.getAttribute('data-base-name');
+    const results = window[`fitResults_${baseName}`];
+    if (!results || results.length === 0) continue;
+    for (const r of results) {
+      maxNExp = Math.max(maxNExp, r.nExp);
+      rows.push({ baseName, result: r });
+    }
+  }
+  if (rows.length === 0) return;
+
+  const headers = ['文件', '波长(nm)', '指数个数', 'R²'];
+  for (let k = 0; k < maxNExp; k++) {
+    headers.push(`τ${k + 1}(ps)`, `τ${k + 1}标准差`, `A${k + 1}(mOD)`, `A${k + 1}标准差(mOD)`);
+  }
+  headers.push('y0(mOD)', 'y0标准差(mOD)', '异常标记');
+
+  let csv = headers.join(',') + '\n';
+  for (const item of rows) {
+    const r = item.result;
+    const row = [item.baseName, r.wavelength.toFixed(2), r.nExp, r.r2.toFixed(6)];
+    for (let k = 0; k < maxNExp; k++) {
+      if (k < r.nExp) {
+        const tau = r.params[k * 2 + 1];
+        const A = r.params[k * 2] * 1000;
+        const tauStd = r.stdErrs?.[k * 2 + 1];
+        const aStd = r.stdErrs?.[k * 2];
+        row.push(
+          tau.toFixed(6),
+          tauStd != null ? tauStd.toFixed(6) : '',
+          A.toFixed(4),
+          aStd != null ? (aStd * 1000).toFixed(4) : ''
+        );
+      } else {
+        row.push('', '', '', '');
+      }
+    }
+    const off = r.params[r.params.length - 1] * 1000;
+    const offStd = r.stdErrs?.[r.stdErrs.length - 1];
+    row.push(off.toFixed(4), offStd != null ? (offStd * 1000).toFixed(4) : '', (r.flags || []).join('; '));
+    csv += row.join(',') + '\n';
+  }
+
+  triggerDownload('\uFEFF' + csv, 'all_fit_summary.csv', 'text/csv;charset=utf-8');
+}
+
+async function downloadAllByTypeZip(type) {
+  if (typeof JSZip === 'undefined') {
+    setStatus('❌ JSZip 未加载，无法打包 ZIP', 'error');
+    return;
+  }
+
+  const cards = Array.from(document.querySelectorAll('#resultsArea .card[data-fit-card="1"]'));
+  const zip = new JSZip();
+  let count = 0;
+
+  for (const card of cards) {
+    const baseName = card.getAttribute('data-base-name');
+    let file = null;
+    if (type === 'processed_csv') file = buildProcessedCSV(baseName);
+    else if (type === 'fit_csv') file = buildFitCSV(baseName);
+    if (!file) continue;
+    zip.file(file.filename, file.content);
+    count++;
+  }
+
+  if (count === 0) {
+    setStatus('❌ 当前没有可打包的数据', 'error');
+    return;
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const filename = type === 'processed_csv' ? 'all_processed_csv.zip' : 'all_fit_csv.zip';
+  triggerBlobDownload(blob, filename);
+}
+
+const _downloadFitCSV_original = downloadFitCSV;
+downloadFitCSV = function(baseName) {
+  const file = buildFitCSV(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
+};
+
+const _downloadFitRawCSV_original = downloadFitRawCSV;
+downloadFitRawCSV = function(baseName) {
+  const file = buildFitRawCSV(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
+};
+
+const _downloadSliceCSV_original = downloadSliceCSV;
+downloadSliceCSV = function(baseName) {
+  const file = buildSliceCSV(baseName);
+  if (!file) return;
+  triggerDownload(file.content, file.filename, file.mimeType);
+};
